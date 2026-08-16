@@ -46,7 +46,30 @@ def _activate(project: Project, document_id: str):
     return profile
 
 
+# Stage locks, held from _start_run to _finish_run. Every stage brackets itself
+# with that pair already, so this is where "one writer per document stage"
+# belongs; if the process dies in between, the kernel drops the lock for us.
+_RUN_LOCKS: dict[int, Any] = {}
+
+
+def _artifacts_of(conn) -> Path:
+    """The artifacts directory, from the connection's own database file."""
+    for _, name, path in conn.execute("PRAGMA database_list"):
+        if name == "main" and path:
+            return Path(path).parent
+    raise RuntimeError("database is not file-backed")
+
+
 def _start_run(conn, document_id: str, run: ProcessingRun) -> int:
+    from familyocr.persistence.locks import StageBusy, stage_lock
+
+    guard = stage_lock(_artifacts_of(conn), document_id, run.stage)
+    try:
+        guard.__enter__()
+    except StageBusy as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
     row = run.as_row()
     cur = conn.execute(
         """INSERT INTO processing_runs
@@ -66,7 +89,9 @@ def _start_run(conn, document_id: str, run: ProcessingRun) -> int:
         ),
     )
     conn.commit()
-    return int(cur.lastrowid)
+    run_id = int(cur.lastrowid)
+    _RUN_LOCKS[run_id] = guard
+    return run_id
 
 
 def _finish_run(conn, run_id: int, status: str = "completed") -> None:
@@ -75,6 +100,9 @@ def _finish_run(conn, run_id: int, status: str = "completed") -> None:
         (_now(), status, run_id),
     )
     conn.commit()
+    guard = _RUN_LOCKS.pop(run_id, None)
+    if guard is not None:
+        guard.__exit__(None, None, None)
 
 
 @app.command()

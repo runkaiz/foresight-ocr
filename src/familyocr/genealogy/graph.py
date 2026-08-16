@@ -134,6 +134,18 @@ def resolve_entry(text: str, geometric: str, charted: list[str],
             best = (score, label, parsed)
     if best is None:
         return geometric, parse_entry(text, own_label=geometric, trust_band=False)
+    if best[2].own_id is None:
+        # No charted generation reads as this entry's own label, which is the
+        # case `trust_band` exists for: 丙辰庶富教2 returns 庚 for 庶 on most of
+        # that band, and 庚 is not a generation at all. The band came from rule
+        # and frame detection, independently of the recognizer, so it can supply
+        # the label the glyph lost — and the substitution is recorded.
+        #
+        # Only ever as a last resort. Forcing geometry onto an entry whose label
+        # *did* read makes the parser take the father's number as the son's.
+        recovered = parse_entry(text, own_label=geometric, trust_band=True)
+        if recovered.own_id is not None:
+            return geometric, recovered
     return best[1], best[2]
 
 

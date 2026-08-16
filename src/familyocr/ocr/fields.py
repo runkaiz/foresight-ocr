@@ -158,6 +158,49 @@ def parse_entry(
     own_label: str | None = None,
     trust_band: bool = False,
 ) -> ParsedEntry:
+    """Label the fields of one entry, retrying without the recognizer's breaks.
+
+    Line breaks are the recognizer's doing, not the page's. 丙辰庶富教1 comes back
+    one field per line, but 丙辰庶富教2 frequently breaks inside an id — `庶` on
+    one line and `千二百` on the next — leaving an id that cannot be assembled at
+    all; half that volume failed to parse for this reason alone.
+
+    Joining the fragments is not safe in general, which is why it is a fallback
+    rather than a normalization: `教二十 富十 三子` joined reads as father 富十三
+    and order 子, getting *both* fields wrong where the spaced form had them
+    right. So the text is parsed as it came first, and the joined form is used
+    only when that yields no id — an entry that already parses is never touched.
+    """
+    raw = (text or "").strip()
+    joined = "".join(raw.split())
+    # Escalating, safest first. Reading the label off the page is always better
+    # than borrowing it from geometry, so both spellings are tried on their own
+    # before the band is trusted at all — otherwise `庶 / 干 / 二百` is rescued
+    # from its own last line as 庶二百, and a wrong id that looks right is worse
+    # than none.
+    attempts = [(raw, False), (joined, False)]
+    if trust_band:
+        attempts += [(raw, True), (joined, True)]
+
+    fallback: ParsedEntry | None = None
+    for candidate, trust in attempts:
+        if candidate != raw and candidate == joined and joined == raw:
+            continue
+        parsed = _parse_fields(candidate, own_label, trust)
+        if parsed.own_id is not None:
+            parsed.text = raw   # the transcription on record is what was read
+            return parsed
+        if fallback is None:
+            fallback = parsed
+    fallback.text = raw
+    return fallback
+
+
+def _parse_fields(
+    text: str | None,
+    own_label: str | None = None,
+    trust_band: bool = False,
+) -> ParsedEntry:
     """Label the fields of one entry transcription.
 
     `own_label` is the band the crop came from. Supply it whenever it is known —
@@ -244,16 +287,26 @@ def parse_entry(
             consumed.append((m.start(), end))
 
     if own_id is None and trust_band and own_label:
-        # No id carried the expected label. If the entry opens with a numeral
-        # run, that is the id and the label glyph was simply misrecognized.
-        head = work.split("\n", 1)[0].strip()
-        m = _LEADING_NUMERAL.match(head)
-        if m:
-            own_id = own_label + m.group("num")
-            observed_label = m.group("pre")
-            label_from_geometry = True
-            start = work.index(head)
-            consumed.append((start, start + m.end()))
+        # No id carried the expected label. A line that is a numeral run behind
+        # a single glyph is the id, and that glyph is the misrecognized label.
+        #
+        # Every line, not just the first: 丙辰庶富教1 prints the id first, but
+        # 丙辰庶富教2 prints it last, behind the father's name and the birth
+        # order, so looking only at the head missed that volume's 庶 band almost
+        # entirely. Name and order lines cannot match — the pattern needs two
+        # adjacent numeral characters, and `純一`, `武功` and `三子` have one at
+        # most.
+        offset = 0
+        for line in work.split("\n"):
+            m = _LEADING_NUMERAL.match(line.strip())
+            if m:
+                own_id = own_label + m.group("num")
+                observed_label = m.group("pre")
+                label_from_geometry = True
+                start = offset + line.index(line.strip())
+                consumed.append((start, start + m.end()))
+                break
+            offset += len(line) + 1
 
     order = None
     for om in _ORDER_RE.finditer(work):

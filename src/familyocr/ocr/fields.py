@@ -40,9 +40,13 @@ from familyocr.validation.numerals import CONTRACTED, DIGITS, UNITS
 # one. Treating the three as interchangeable own-labels and taking whichever
 # appeared first — as an earlier version of this file did — silently swapped the
 # two fields on the majority of 富 and 教 entries.
+# Defaults for the first corpus; the active document profile overrides them.
 GENERATION_CHAIN = ("允", "庶", "富", "教")
 BAND_LABELS = ("庶", "富", "教")
-ALL_LABELS = GENERATION_CHAIN
+# The regexes are built from a superset so one compiled pattern serves every
+# volume: 允庶富教 for the 庶富教 books, 清廉麗熙 for the others. Which of these
+# is an *own* label on a given page still comes from the profile.
+ALL_LABELS = ("允", "庶", "富", "教", "清", "廉", "麗", "熙")
 
 # Orthographic variants of the band labels that recognizers legitimately emit.
 # 敎 (U+654E) is the same character as 教 (U+6559) in a different printed form,
@@ -77,11 +81,14 @@ def canonical_label(ch: str) -> str:
 
 
 def parent_label(own_label: str) -> str | None:
-    """The label one generation above `own_label`."""
-    if own_label not in GENERATION_CHAIN:
+    """The label one generation above `own_label`, per the active profile."""
+    from familyocr.context import generation_chain
+
+    chain = generation_chain() or list(GENERATION_CHAIN)
+    if own_label not in chain:
         return None
-    i = GENERATION_CHAIN.index(own_label)
-    return GENERATION_CHAIN[i - 1] if i > 0 else None
+    i = chain.index(own_label)
+    return chain[i - 1] if i > 0 else None
 
 NUMERAL_CHARS = "".join(sorted(set(DIGITS) | set(UNITS) | set(CONTRACTED)))
 
@@ -225,7 +232,11 @@ def parse_entry(
             own_id = token
             consumed.append((m.start(), end))
         elif parent_id is None:
-            older = min(own_id[0], label, key=GENERATION_CHAIN.index)
+            from familyocr.context import generation_chain as _chain
+            order = _chain() or list(GENERATION_CHAIN)
+            if own_id[0] not in order or label not in order:
+                continue
+            older = min(own_id[0], label, key=order.index)
             if label == older:
                 parent_id = token
             else:

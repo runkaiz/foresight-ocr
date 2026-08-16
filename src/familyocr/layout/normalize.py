@@ -103,6 +103,23 @@ class PageNormalization:
         return d
 
 
+def median_frame(passes: list[FramePass]) -> list[list[float]] | None:
+    """Median corner positions across pages whose frame was really detected.
+
+    Used as a last resort for pages the detector cannot fit at all. Scans in this
+    volume are aligned closely enough (frame-size MAD around 3-5 px) that the
+    corpus median frame is a far better guess than nothing — but it is a guess,
+    and pages normalized this way are marked `fallback` so they are never
+    counted as measured.
+    """
+    good = [p for p in passes if p.fit.ok and p.fit.corners
+            and not p.fit.inferred_edges]
+    if len(good) < 20:
+        return None
+    quads = np.array([p.fit.corners for p in good], dtype=np.float64)
+    return np.median(quads, axis=0).tolist()
+
+
 def normalize_page(
     fit: FrameFit,
     space: CanonicalSpace,

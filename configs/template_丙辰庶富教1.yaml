@@ -3,22 +3,27 @@ canonical_height: 3025
 band_count: 3
 band_edges:
 - 0.0
-- 1011.9592589628837
-- 1998.9674679276359
+- 1011.9186357125161
+- 1998.8165309060996
 - 3025.0
 band_edge_mad:
 - 0.0
-- 4.470241918917225
-- 5.3888361192032335
+- 4.488718264492036
+- 5.411118151481446
 - 0.0
 column_pitch: 378.0
 column_pitch_mad: 2.0
 text_left: 0.0
-text_right: 2296.0
-pages_used: 194
+text_right: 2295.5
+pages_used: 198
 layout_families:
+  outlier:
+  - 1
+  - 10
+  - 181
   layout_A:
   - 2
+  - 3
   - 4
   - 5
   - 6
@@ -209,9 +214,9 @@ layout_families:
   - 193
   - 194
   - 195
+  - 196
+  - 197
   - 198
   - 199
+  - 200
   - 201
-  outlier:
-  - 10
-  - 181

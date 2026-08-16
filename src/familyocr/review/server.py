@@ -22,6 +22,7 @@ from familyocr.persistence import connect, init_schema
 from familyocr.project import Project
 from familyocr.review.data import (
     export_verified,
+    page_image,
     latest_ocr_tag,
     page_entries,
     progress,
@@ -86,11 +87,27 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
 
             if url.path == "/api/page":
                 page = int(q.get("page", ["0"])[0])
+                # A spread shows consecutive pages together: a band's sequence
+                # runs straight across the page break, so a boundary error is
+                # only visible when both sides are on screen at once.
+                span = max(1, min(3, int(q.get("spread", ["1"])[0]))) 
                 conn = _conn()
                 try:
-                    entries = [e.to_dict() for e in
-                               page_entries(conn, document_id, page, tag)]
-                    self._json({"page": page, "entries": entries,
+                    available = reviewable_pages(conn, document_id)
+                    wanted = [p for p in available if page <= p < page + span]
+                    sheets = []
+                    for p in wanted:
+                        img = page_image(conn, document_id, p, project)
+                        sheets.append({
+                            "page": p,
+                            "image": img.path,
+                            "width": img.width,
+                            "height": img.height,
+                            "frame_status": img.frame_status,
+                            "entries": [e.to_dict() for e in
+                                        page_entries(conn, document_id, p, tag)],
+                        })
+                    self._json({"page": page, "pages": sheets,
                                 "progress": progress(conn, document_id)})
                 finally:
                     conn.close()

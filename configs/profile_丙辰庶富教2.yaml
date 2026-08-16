@@ -1,0 +1,13 @@
+document_id: 丙辰庶富教2
+band_labels:
+- 庶
+- 富
+- 教
+generation_chain:
+- 允
+- 庶
+- 富
+- 教
+bands_per_page: 3
+notes: seeded from the volume title; verify against the header page
+label_variants: {}

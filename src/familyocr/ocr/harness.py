@@ -107,7 +107,29 @@ def run_backend(
     )
 
 
-BAND_LABELS = {0: "庶", 1: "富", 2: "教"}
+def _bands() -> dict[int, str]:
+    from familyocr.context import band_labels
+
+    return band_labels()
+
+
+class _BandLabels(dict):
+    """Band index -> label, resolved against the active document profile."""
+
+    def get(self, key, default=None):
+        return _bands().get(key, default)
+
+    def items(self):
+        return _bands().items()
+
+    def __getitem__(self, key):
+        return _bands()[key]
+
+    def __contains__(self, key):
+        return key in _bands()
+
+
+BAND_LABELS = _BandLabels()
 
 
 def sequence_score(outcome: RunOutcome) -> dict[str, Any]:

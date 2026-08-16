@@ -36,6 +36,16 @@ def _open_db(project: Project):
     return conn
 
 
+def _activate(project: Project, document_id: str):
+    """Load this document's profile before anything reads band labels."""
+    from familyocr.context import set_profile
+    from familyocr.document.profile import load_profile
+
+    profile = load_profile(project.configs, document_id)
+    set_profile(profile)
+    return profile
+
+
 def _start_run(conn, document_id: str, run: ProcessingRun) -> int:
     row = run.as_row()
     cur = conn.execute(
@@ -140,6 +150,16 @@ def inspect(
         table.add_row(name, rendered)
     console.print(table)
 
+    from familyocr.document.profile import load_profile, save_profile
+
+    profile = load_profile(project.configs, info.document_id)
+    saved = save_profile(project.configs, profile)
+    console.print(
+        f"[green]profile[/green] {saved.name}: bands "
+        f"{'/'.join(profile.band_labels) or '—'} "
+        f"({profile.bands_per_page}), chain {'→'.join(profile.generation_chain)}"
+    )
+
     if report:
         from familyocr.document.report import write_corpus_analysis
 
@@ -156,6 +176,7 @@ def extract(
     """Preserve the embedded original scans and decode PNG derivatives."""
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute(
         "SELECT * FROM documents WHERE id = ?", (document_id,)
     ).fetchone()
@@ -222,16 +243,21 @@ def normalize(
     pages: Optional[str] = typer.Option(None, help="e.g. 1,2,10-20"),
     downscale: int = typer.Option(4, help="Frame detection works at 1/N scale"),
     write_pages: bool = typer.Option(True, help="Write warped canonical PNGs"),
+    use_fallback: bool = typer.Option(
+        True, "--fallback/--no-fallback",
+        help="Place the corpus median frame on pages that cannot be fitted",
+    ),
 ) -> None:
     """Detect the printed page frame and warp pages into canonical space."""
     import cv2
     import numpy as np
 
     from familyocr.imaging.overlay import contact_sheet, draw_frame_overlay
-    from familyocr.layout.frame import detect_frame, refit_with_prior
+    from familyocr.layout.frame import FrameFit, detect_frame, refit_with_prior
     from familyocr.layout.normalize import (
         FramePass,
         build_canonical_space,
+        median_frame,
         normalize_page,
         roundtrip_error,
         warp_page,
@@ -239,6 +265,7 @@ def normalize(
 
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
@@ -298,6 +325,26 @@ def normalize(
         f"(MAD {space.width_mad:.1f}×{space.height_mad:.1f})"
     )
 
+    # Last resort for pages the detector cannot fit at all: place the corpus
+    # median frame. A guessed frame that the reviewer can see and reject beats
+    # dropping the page's entries silently — those entries are real people.
+    fallback = median_frame(passes) if use_fallback else None
+    fallback_pages: list[int] = []
+    if fallback:
+        for p in passes:
+            if p.fit.corners:
+                continue
+            p.fit.corners = [list(c) for c in fallback]
+            p.fit.ok = True
+            p.fit.inferred_edges = ["frame-from-corpus-median"]
+            p.fit.reason = "frame taken from corpus median; verify visually"
+            fallback_pages.append(p.page_index)
+        if fallback_pages:
+            console.print(
+                f"[cyan]{len(fallback_pages)}[/cyan] page(s) using the corpus "
+                f"median frame: {fallback_pages}"
+            )
+
     # Pass 2 — grade each fit against the corpus median and warp.
     norm_dir = project.pages_dir(document_id, "normalized")
     overlay_dir = project.analysis_dir(document_id, "frames")
@@ -318,6 +365,24 @@ def normalize(
     with console.status("pass 2/2: warping…") as status:
         for i, p in enumerate(passes, 1):
             norm = normalize_page(p.fit, space, p.page_index)
+            if not norm.ok and fallback:
+                # The detected frame is implausible. Substitute the corpus
+                # median rather than dropping the page: its entries are real
+                # people, and a flagged guess the reviewer can see and reject is
+                # better than a silent omission.
+                guess = FrameFit(
+                    corners=[list(c) for c in fallback], skew_deg=0.0,
+                    width=space.median_width, height=space.median_height,
+                    rect_error=0.0, line_residual=float("nan"), interior_h=[],
+                    detected_edges=0, ok=True,
+                    reason="frame taken from corpus median; verify visually",
+                    inferred_edges=["frame-from-corpus-median"],
+                )
+                norm = normalize_page(guess, space, p.page_index)
+                norm.status = "fallback"
+                norm.reason = "frame taken from corpus median; verify visually"
+                if p.page_index not in fallback_pages:
+                    fallback_pages.append(p.page_index)
             results.append(norm)
             img = cv2.imread(str(p.path))
 
@@ -371,13 +436,15 @@ def normalize(
     out_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2), "utf-8")
 
     clean = [r for r in results if r.status == "clean"]
+    fell_back = [r for r in results if r.status == "fallback"]
     inferred = [r for r in results if r.status == "inferred"]
     flagged = [r for r in results if r.status == "failed"]
     skews = sorted(abs(r.skew_deg) for r in results if r.forward)
     console.print(
         f"[green]{len(clean)}[/green] clean, "
         f"[cyan]{len(inferred)}[/cyan] with an inferred edge, "
-        f"[yellow]{len(flagged)}[/yellow] failed; "
+        f"[yellow]{len(flagged)}[/yellow] failed, "
+        f"[magenta]{len(fell_back)}[/magenta] on the median frame; "
         f"worst coordinate round-trip {worst_roundtrip:.4f} px"
     )
     if skews:
@@ -423,6 +490,7 @@ def restore(
 
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
@@ -519,7 +587,9 @@ def restore(
 @app.command()
 def layout(
     document_id: str = typer.Argument(...),
-    bands: int = typer.Option(3, help="Expected generation bands per page"),
+    bands: int = typer.Option(
+        0, help="Expected bands per page; 0 uses the document profile"
+    ),
     overlays: int = typer.Option(24, help="How many overlay pages to render"),
 ) -> None:
     """Recover band and column geometry, then learn the document template."""
@@ -536,10 +606,14 @@ def layout(
 
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
 
+    profile = _activate(project, document_id)
+    if not bands:
+        bands = profile.bands_per_page or 3
     norm_dir = project.pages_dir(document_id, "normalized")
     page_files = sorted(norm_dir.glob("p*.png"))
     if not page_files:
@@ -676,6 +750,7 @@ def segment(
 
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
@@ -926,6 +1001,7 @@ def validate(
 
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
@@ -1058,6 +1134,7 @@ def benchmark(
 
     project = Project.discover()
     conn = _open_db(project)
+    _activate(project, document_id)
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
@@ -1192,6 +1269,11 @@ def verify_layout(
     document_id: str = typer.Argument(...),
     expected_pages: int = typer.Option(200, help="Chart pages in the volume"),
     tag: Optional[str] = typer.Option(None, help="OCR configuration to use"),
+    mark_headers: bool = typer.Option(
+        False, "--mark-headers",
+        help="Reclassify entries whose text is a section header, so they are "
+             "not reviewed or counted as people",
+    ),
 ) -> None:
     """Check that entries were cut correctly, independently of the lattice."""
     from familyocr.layout.verify import (
@@ -1291,6 +1373,32 @@ def verify_layout(
                       f"{r['count']} distinct, {r['min']}–{r['max']}, "
                       f"{r['missing']} missing")
     console.print(table)
+
+    if mark_headers and headers:
+        # Evidence-based, not a hardcoded page number: the entry is reclassified
+        # because its own transcription is header text. The region and its OCR
+        # stay in place; only the role changes, so the decision is reversible
+        # and auditable.
+        for h in headers:
+            conn.execute(
+                """UPDATE source_regions SET role = 'header'
+                   WHERE document_id = ? AND page_index = ? AND crop_id IN (
+                       SELECT sr2.crop_id FROM source_regions sr2
+                       JOIN physical_entries pe2 ON pe2.id = sr2.entry_id
+                       JOIN bands b2 ON b2.id = pe2.band_id
+                       WHERE sr2.document_id = ? AND sr2.page_index = ?
+                         AND b2.band_index = ? AND pe2.entry_index = ?
+                   )""",
+                (document_id, h["page"], document_id, h["page"],
+                 {v_: k_ for k_, v_ in BAND_LABELS.items()}.get(h["band"], -1),
+                 h["entry"]),
+            )
+        conn.commit()
+        console.print(
+            f"[green]reclassified[/green] {len(headers)} entries as headers "
+            "(regions and OCR kept; only the role changed)"
+        )
+        v.problems = [p for p in v.problems if "header text" not in p]
 
     if v.ok:
         console.print("[green]layout verified[/green] — no structural problems found")

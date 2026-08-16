@@ -1,14 +1,14 @@
-# Corpus analysis — `丙辰庶富教1`
+# Corpus analysis — `丙辰清廉麗熙2`
 
-Generated 2026-08-16T10:16:11+00:00 by `familyocr inspect`.
+Generated 2026-08-16T14:46:00+00:00 by `familyocr inspect`.
 
 ## Document
 
 | property | value |
 |---|---|
-| source | `source/丙辰庶富教1.pdf` |
-| sha256 | `d1b4bab6f328f6acfa24e3738927325025e0708a00fcef76d86e9eabd2f7d744` |
-| pages | 201 |
+| source | `source/丙辰清廉麗熙2.pdf` |
+| sha256 | `45196ada5736b2c74181ea58f738d26b37d6eadc03e9508fbb3553b78e911e71` |
+| pages | 351 |
 | PDF version | 1.5 |
 | creator | FreePic2Pdf |
 | producer | FreePic2Pdf_Lib - v3.07 |
@@ -19,13 +19,13 @@ Each row lists the distinct values observed across all pages. A single value mea
 
 | property | observed values (count) |
 |---|---|
-| geometry | `2424x3744` ×201 |
-| colorspace | `jpx-internal` ×201 |
-| encoding | `jpx` ×201 |
-| ppi | `535` ×201 |
-| images_per_page | `1` ×201 |
+| geometry | `2424x3744` ×350, `2388x3749` ×1 |
+| colorspace | `jpx-internal` ×351 |
+| encoding | `jpx` ×351 |
+| ppi | `535` ×351 |
+| images_per_page | `1` ×351 |
 
-All 201 pages share identical geometry, encoding and resolution. Extraction and normalization can assume one raster profile; any page that later fails frame detection is a physical-damage outlier, not a format outlier.
+The corpus is **not** homogeneous. Stages downstream of extraction must branch on the properties listed above.
 
 ## Encoding note
 
@@ -37,18 +37,20 @@ Because the embedded stream is already a complete `.jp2` file, `familyocr extrac
 
 | statistic | bytes |
 |---|---|
-| min | 485,608 |
-| median | 486,152 |
-| max | 486,202 |
-| total | 97,706,131 |
+| min | 485,840 |
+| median | 486,159 |
+| max | 488,178 |
+| total | 170,637,536 |
 
 Compression ratio is roughly uniform, so no page is dramatically noisier or blanker than the rest at the codec level.
 
 ## Per-page detail
 
-Full machine-readable detail is in `artifacts/analysis/丙辰庶富教1/inspect/structure.json`. Pages that deviate from the modal profile are listed below.
+Full machine-readable detail is in `artifacts/analysis/丙辰清廉麗熙2/inspect/structure.json`. Pages that deviate from the modal profile are listed below.
 
-No deviations: all 201 pages are `2424x3744`.
+| page | geometry | encoding | images |
+|---|---|---|---|
+| 1 | 2388x3749 | jpx | 1 |
 
 ## Content structure (manual observation)
 

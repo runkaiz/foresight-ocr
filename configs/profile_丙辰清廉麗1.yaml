@@ -1,0 +1,12 @@
+document_id: 丙辰清廉麗1
+band_labels:
+- 清
+- 廉
+- 麗
+generation_chain:
+- 清
+- 廉
+- 麗
+bands_per_page: 3
+notes: seeded from the volume title; verify against the header page
+label_variants: {}

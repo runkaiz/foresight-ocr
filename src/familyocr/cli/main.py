@@ -783,7 +783,10 @@ def segment(
         raise typer.BadParameter("no layout results; run layout first")
 
     selected = _parse_pages(pages)
-    usable = [r for r in rows if r["layout_family"] != "outlier"]
+    # Outlier pages are segmented too: an unusual layout is a reason to look
+    # harder, not a reason to drop the people printed on it. The family is
+    # recorded so the reviewer knows which pages to distrust.
+    usable = list(rows)
     if selected:
         targets = [r for r in rows if r["page_index"] in selected]
     elif sample:
@@ -1352,8 +1355,7 @@ def verify_layout(
             f"(pages {sorted({h['page'] for h in headers})})"
         )
     counts = set(per_page.values())
-    if len(counts) > 1:
-        v.problems.append(f"entry count varies across pages: {sorted(counts)}")
+    odd_pages = {p: n for p, n in per_page.items() if n != max(counts, key=list(per_page.values()).count)}
 
     table = Table(title=f"layout verification — {document_id}")
     table.add_column("check")
@@ -1405,6 +1407,12 @@ def verify_layout(
     else:
         for p in v.problems:
             console.print(f"[yellow]problem[/yellow] {p}")
+    if odd_pages:
+        console.print(
+            f"[cyan]note[/cyan] {len(odd_pages)} page(s) carry a different "
+            f"entry count: {dict(list(odd_pages.items())[:6])} — real on this "
+            "corpus, but worth a look"
+        )
     if missing:
         console.print(
             f"[cyan]note[/cyan] {len(missing)} page(s) never segmented; their "

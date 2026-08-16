@@ -409,6 +409,27 @@ def store_results(conn, document_id: str, run_id: int, outcome: RunOutcome) -> i
         "ON CONFLICT(id) DO NOTHING",
         (model_id, outcome.backend, outcome.model_version, outcome.backend),
     )
+    # A tag names a configuration, so re-running one supersedes it rather than
+    # accumulating beside it. Two runs of `book-v3` once left 7200 candidates
+    # for 3600 crops — identical answers, but every count computed over them was
+    # reading each entry twice.
+    superseded = [
+        r["id"] for r in conn.execute(
+            """SELECT orun.id FROM ocr_runs orun
+               JOIN models m ON m.id = orun.model_id
+               JOIN processing_runs pr ON pr.id = orun.run_id
+               WHERE pr.document_id = ? AND orun.tag = ?
+                 AND orun.input_variant = ? AND m.backend = ?""",
+            (document_id, outcome.tag, outcome.variant, outcome.backend),
+        )
+    ]
+    for old in superseded:
+        conn.execute(
+            "DELETE FROM ocr_candidates WHERE ocr_run_id = ? AND source_region_id IN "
+            "(SELECT id FROM source_regions WHERE document_id = ? AND context = ?)",
+            (old, document_id, outcome.context),
+        )
+
     cur = conn.execute(
         "INSERT INTO ocr_runs (run_id, model_id, input_variant, tag) "
         "VALUES (?,?,?,?)",

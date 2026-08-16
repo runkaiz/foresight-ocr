@@ -657,12 +657,12 @@ def layout(
     structures = []
     with console.status(f"analysing {len(page_files)} normalized pages…") as status:
         for i, f in enumerate(page_files, 1):
-            gray = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE)
+            gray = _imread(f, cv2.IMREAD_GRAYSCALE)
             page_index = int(f.stem[1:])
             structures.append(analyse_page(gray, page_index, expected_bands=bands))
             status.update(f"analysing {i}/{len(page_files)}")
 
-    h, w = cv2.imread(str(page_files[0]), cv2.IMREAD_GRAYSCALE).shape[:2]
+    h, w = _imread(page_files[0], cv2.IMREAD_GRAYSCALE).shape[:2]
     template = build_template(structures, w, h)
     template.layout_families = assign_layout_families(structures, template)
 
@@ -873,7 +873,7 @@ def segment(
             page_path = norm_dir / f"p{page_index:04d}.png"
             if not page_path.exists():
                 continue
-            page = cv2.imread(str(page_path))
+            page = _imread(page_path)
             ph, pw = page.shape[:2]
             variant_pages = {
                 v: build_variant(page, v)
@@ -1241,6 +1241,26 @@ def benchmark(
     # with a single row and lose the rest of the grid.
     rows, agreements = summarize(load_outcomes(conn, document_id), gold)
     _render_benchmark(project, document_id, rows, agreements)
+
+
+def _imread(path: Path, flags: int = 1):
+    """Read an image, or say which file is unreadable and why it matters.
+
+    `cv2.imread` reports failure by returning None, so a truncated page — the
+    kind a killed run leaves behind — surfaces hundreds of lines later as
+    `'NoneType' object has no attribute 'shape'`, naming neither the file nor
+    the stage. Re-running the producing stage is the fix, so the message says
+    so.
+    """
+    import cv2
+
+    img = cv2.imread(str(path), flags)
+    if img is None:
+        raise typer.BadParameter(
+            f"cannot read {path} — it is missing or truncated. "
+            f"Re-run the stage that wrote it."
+        )
+    return img
 
 
 def _crop_variants(crops_root: Path) -> list[str]:

@@ -999,6 +999,14 @@ def segment(
         f"({len(wanted)} width(s) × {len(wanted_variants)} variant(s)) "
         f"→ {crops_dir}"
     )
+    if len(targets) < len(rows):
+        # --sample defaults to 20, which is right for iterating on geometry and
+        # wrong for building a book. Saying only "20 pages" reads as success;
+        # saying which 20 of how many is what makes the shortfall obvious.
+        console.print(
+            f"[yellow]partial[/yellow] {len(targets)} of {len(rows)} pages have "
+            f"crops; pass --sample 0 to segment the whole document"
+        )
     if pitch_overrides:
         console.print(
             f"[cyan]{len(pitch_overrides)}[/cyan] page(s) used the corpus pitch "

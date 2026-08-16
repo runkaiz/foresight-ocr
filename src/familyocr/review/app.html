@@ -64,6 +64,12 @@
   <button onclick="go(-1)">◀</button>
   <span>p<b id="page">—</b> <span class="muted" id="pagepos"></span></span>
   <button onclick="go(1)">▶</button>
+  <!-- 201 pages is too many to walk to. The box also keeps the URL in step, so
+       a reviewer can close the tab and come back to where they stopped. -->
+  <label class="muted">go to p
+    <input id="goto" type="number" min="1" style="width:5em"
+           onchange="jump(this.value)">
+  </label>
   <label class="muted">spread
     <select id="spread" onchange="reload()">
       <option value="1">1</option><option value="2" selected>2</option>
@@ -105,7 +111,12 @@ async function boot(){
   PAGES=r.pages; TAG=r.tag;
   $('#doc').textContent=r.document_id;
   setProgress(r.progress);
-  await load(0);
+  const want = +location.hash.replace('#p','');
+  if(want){ jump(want); } else { await load(0); }
+  addEventListener('hashchange', ()=>{
+    const p = +location.hash.replace('#p','');
+    if(p && SHEETS[0] && SHEETS[0].page !== p) jump(p);
+  });
 }
 function setProgress(p){
   const pct = p.entries ? 100*p.reviewed/p.entries : 0;
@@ -130,6 +141,12 @@ async function load(i){
   SEL = 0;
   $('#page').textContent = SHEETS.map(s=>s.page).join('–');
   $('#pagepos').textContent = `(${IDX+1}/${PAGES.length})`;
+  if(SHEETS[0]){
+    $('#goto').value = SHEETS[0].page;
+    // replaceState, not a hash assignment: this is recording where the reviewer
+    // is, and it should not fill the back button with every page they passed.
+    history.replaceState(null, '', `#p${SHEETS[0].page}`);
+  }
   const odd = SHEETS.filter(s=>s.frame_status && s.frame_status!=='automatic');
   $('#frame').textContent = odd.length ? `frame: ${odd.map(s=>s.page+' '+s.frame_status).join(', ')}` : '';
   setProgress(r.progress);
@@ -242,6 +259,16 @@ async function exportGold(){
   status(`exported ${r.written} verified entries`);
 }
 function go(d){ load(IDX + d*Math.max(1, +$('#spread').value)); }
+
+// Page numbers are the book's, not the list's: pages the pipeline skipped leave
+// gaps, so jumping to 177 must land on 177 and not on the 177th sheet.
+function jump(page){
+  const want = +page;
+  if(!want) return;
+  let best = 0;
+  PAGES.forEach((p,i)=>{ if(p<=want) best=i; });
+  load(best);
+}
 
 document.addEventListener('keydown', async ev=>{
   if(ev.metaKey && ev.key==='ArrowLeft'){ ev.preventDefault(); return go(-1); }

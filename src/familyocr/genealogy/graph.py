@@ -49,10 +49,18 @@ def named_father_key(label: str, name: str) -> str:
 
 @dataclass
 class EntryRow:
-    """One entry, with the best transcription available for it."""
+    """One entry, with the best transcription available for it.
+
+    Two different notions of "band" live here and must not be confused.
+    `band_label` is the generation the text says this person belongs to — his
+    identity. `geometric_label` is the band he was cut from on the page — his
+    address. They usually agree; where a misreading makes them differ, identity
+    decides who he is and address decides where the reviewer must look.
+    """
     source_region_id: int
     page_index: int
     band_label: str
+    geometric_label: str
     entry_index: int
     text: str
     source: str          # human | ocr
@@ -149,6 +157,7 @@ def build_entries(rows: Iterable[dict[str, Any]], band_of: dict[int, str],
             source_region_id=r["source_region_id"],
             page_index=r["page_index"],
             band_label=label,
+            geometric_label=geometric,
             entry_index=r["entry_index"],
             text=text,
             source=r["source"],
@@ -186,7 +195,7 @@ def build_graph(entries: list[EntryRow], parent_of: dict[str, str | None],
         if key in people:
             first = people[key]
             findings.append(GraphFinding(
-                kind="duplicate_id", band_label=e.band_label,
+                kind="duplicate_id", band_label=e.geometric_label,
                 page_index=e.page_index, entry_index=e.entry_index,
                 expected=f"{key} already on page {first.page_index}",
                 observed=e.text.replace("\n", " ")[:40],
@@ -219,7 +228,7 @@ def build_graph(entries: list[EntryRow], parent_of: dict[str, str | None],
                 resolved[key] = None
                 link_status["unresolved"] += 1
                 findings.append(GraphFinding(
-                    kind="unresolved_father", band_label=e.band_label,
+                    kind="unresolved_father", band_label=e.geometric_label,
                     page_index=e.page_index, entry_index=e.entry_index,
                     expected=fkey, observed=e.text.replace("\n", " ")[:40],
                 ))
@@ -237,7 +246,7 @@ def build_graph(entries: list[EntryRow], parent_of: dict[str, str | None],
             resolved[key] = None
             link_status["unresolved"] += 1
             findings.append(GraphFinding(
-                kind="no_father_field", band_label=e.band_label,
+                kind="no_father_field", band_label=e.geometric_label,
                 page_index=e.page_index, entry_index=e.entry_index,
                 expected=f"a {above} id or a name",
                 observed=e.text.replace("\n", " ")[:40],
@@ -279,7 +288,7 @@ def _order_conflicts(people: dict[str, EntryRow],
                 continue
             if rank in seen:
                 findings.append(GraphFinding(
-                    kind="order_conflict", band_label=e.band_label,
+                    kind="order_conflict", band_label=e.geometric_label,
                     page_index=e.page_index, entry_index=e.entry_index,
                     expected=f"a rank not already used among {fkey}'s sons",
                     observed=f"{e.parsed.order} duplicates page "
@@ -290,7 +299,7 @@ def _order_conflicts(people: dict[str, EntryRow],
         for (e1, r1), (e2, r2) in zip(known, known[1:]):
             if r2 < r1:
                 findings.append(GraphFinding(
-                    kind="order_reversed", band_label=e2.band_label,
+                    kind="order_reversed", band_label=e2.geometric_label,
                     page_index=e2.page_index, entry_index=e2.entry_index,
                     expected=f"a rank above {e1.parsed.order}",
                     observed=f"{e2.parsed.order} after {e1.parsed.order}",

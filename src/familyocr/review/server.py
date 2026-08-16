@@ -53,10 +53,19 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
         def log_message(self, *args):  # noqa: A003 - silence per-request logging
             pass
 
-        def _send(self, code: int, body: bytes, content_type: str) -> None:
+        def _send(self, code: int, body: bytes, content_type: str,
+                  cache: bool = False) -> None:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if not cache:
+                # The app and its data change under the reviewer: re-running
+                # `graph` rewrites the findings, and editing app.html changes the
+                # page. Chrome served both from cache until a hard reload, so
+                # findings for entries already corrected stayed on screen.
+                # Crops and page images are content-addressed by path and never
+                # change, so those are still cached.
+                self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -126,7 +135,7 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
                     self._json({"error": "forbidden"}, 403)
                     return
                 ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-                self._send(200, target.read_bytes(), ctype)
+                self._send(200, target.read_bytes(), ctype, cache=True)
                 return
 
             self._json({"error": "not found"}, 404)

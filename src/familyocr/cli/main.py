@@ -1746,17 +1746,12 @@ def graph(
 
     q = """SELECT sr.id AS source_region_id, sr.page_index AS page_index,
                   b.band_index AS band_index, pe.entry_index AS entry_index,
-                  oc.transcription AS ocr_text, hc.transcription AS human_text
+                  oc.transcription AS ocr_text
            FROM source_regions sr
            JOIN physical_entries pe ON pe.id = sr.entry_id
            JOIN bands b ON b.id = pe.band_id
            LEFT JOIN ocr_candidates oc ON oc.source_region_id = sr.id
            LEFT JOIN ocr_runs orun ON orun.id = oc.ocr_run_id
-           LEFT JOIN human_corrections hc
-                  ON hc.document_id = sr.document_id
-                 AND hc.page_index = sr.page_index
-                 AND hc.entry_index = pe.entry_index
-                 AND hc.unreadable = 0
            WHERE sr.document_id = ? AND sr.context = 'tight'
              AND sr.role = 'entry'"""
     params: list[Any] = [document_id]
@@ -1765,12 +1760,29 @@ def graph(
         params.append(tag)
     q += " ORDER BY sr.page_index, b.band_index, pe.entry_index, oc.id"
 
+    # Corrections are keyed by band *label*, entries by band *index*, so they
+    # are matched here rather than in SQL. Joining on (page, entry) alone — as
+    # this did — applied one correction to the same entry position in every
+    # band, silently overwriting two other people per fix.
+    band_of = profile.band_map()
+    corrections: dict[tuple[int, str, int], str] = {}
+    for r in conn.execute(
+        "SELECT page_index, band_label, entry_index, transcription "
+        "FROM human_corrections WHERE document_id = ? AND unreadable = 0 "
+        "AND transcription IS NOT NULL",
+        (document_id,),
+    ):
+        corrections[(r["page_index"], r["band_label"], r["entry_index"])] = \
+            r["transcription"]
+
     # One row per entry: the last OCR answer wins, a human correction beats it.
     best: dict[tuple[int, int, int], dict[str, Any]] = {}
     for r in conn.execute(q, params):
         key = (r["page_index"], r["band_index"], r["entry_index"])
-        text, source = (r["human_text"], "human") if r["human_text"] else (
-            r["ocr_text"], "ocr")
+        human = corrections.get(
+            (r["page_index"], band_of.get(r["band_index"]), r["entry_index"])
+        )
+        text, source = (human, "human") if human else (r["ocr_text"], "ocr")
         if text is None and key in best:
             continue
         best[key] = {
@@ -1791,7 +1803,6 @@ def graph(
             f"run `familyocr benchmark {document_id}` first"
         )
 
-    band_of = profile.band_map()
     parent_of = {label: profile.parent_of(label) for label in profile.band_labels}
     entries = build_entries(best.values(), band_of, parent_of)
 

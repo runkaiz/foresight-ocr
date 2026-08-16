@@ -8,6 +8,7 @@ through artifacts on disk and rows in SQLite.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1184,6 +1185,129 @@ def review(
     project = Project.discover()
     serve(project, document_id, port=port, tag=tag, reviewer=reviewer,
           open_browser=open_browser)
+
+
+@app.command("verify-layout")
+def verify_layout(
+    document_id: str = typer.Argument(...),
+    expected_pages: int = typer.Option(200, help="Chart pages in the volume"),
+    tag: Optional[str] = typer.Option(None, help="OCR configuration to use"),
+) -> None:
+    """Check that entries were cut correctly, independently of the lattice."""
+    from familyocr.layout.verify import (
+        HEADER_RE,
+        LayoutVerification,
+        check_phantoms,
+        edge_bias,
+    )
+    from familyocr.ocr.fields import parse_entry
+    from familyocr.ocr.harness import BAND_LABELS
+    from familyocr.validation.numerals import parse_numeral
+
+    project = Project.discover()
+    conn = _open_db(project)
+
+    rows = conn.execute(
+        """SELECT sr.page_index p, b.band_index bi, pe.entry_index ei,
+                  sr.crop_path cp, oc.transcription t
+           FROM source_regions sr
+           JOIN physical_entries pe ON pe.id = sr.entry_id
+           JOIN bands b ON b.id = pe.band_id
+           LEFT JOIN ocr_candidates oc ON oc.source_region_id = sr.id
+           WHERE sr.document_id = ? AND sr.context = 'tight'""",
+        (document_id,),
+    ).fetchall()
+    if not rows:
+        raise typer.BadParameter("nothing segmented; run segment first")
+
+    pages = sorted({r["p"] for r in rows})
+    per_page = Counter(r["p"] for r in rows)
+    missing = [p for p in range(2, expected_pages + 2) if p not in set(pages)]
+
+    unparsed = Counter()
+    headers = []
+    ids: dict[str, set[int]] = {}
+    for r in rows:
+        label = BAND_LABELS.get(r["bi"], str(r["bi"]))
+        parsed = parse_entry(r["t"], own_label=label, trust_band=True)
+        if parsed.own_id is None:
+            unparsed[r["ei"]] += 1
+        else:
+            value = parse_numeral(parsed.own_id[1:])
+            if value:
+                ids.setdefault(label, set()).add(value)
+        if r["t"] and HEADER_RE.search(r["t"]):
+            headers.append({"page": r["p"], "band": label, "entry": r["ei"],
+                            "text": r["t"][:40]})
+
+    crops = [Path(r["cp"]) for r in rows if r["cp"]]
+    with console.status(f"checking {len(crops)} crops for phantom entries…"):
+        phantoms, pct = check_phantoms(crops)
+
+    id_ranges = {}
+    for label, values in sorted(ids.items()):
+        lo, hi = min(values), max(values)
+        gaps = [v for v in range(lo, hi + 1) if v not in values]
+        id_ranges[label] = {"count": len(values), "min": lo, "max": hi,
+                            "missing": len(gaps),
+                            "missing_sample": gaps[:12]}
+
+    bias = edge_bias(dict(unparsed))
+    v = LayoutVerification(
+        pages_expected=expected_pages, pages_segmented=len(pages),
+        pages_missing=missing, entries=len(rows),
+        entries_per_page=dict(per_page), phantom_crops=phantoms,
+        ink_percentiles=pct, unparsed_by_position=dict(sorted(unparsed.items())),
+        edge_bias=bias, header_entries=headers, id_ranges=id_ranges,
+    )
+    if phantoms:
+        v.problems.append(f"{len(phantoms)} crops contain almost no ink")
+    if bias > 1.6:
+        v.problems.append(f"failures concentrate at page edges (bias {bias:.2f})")
+    if headers:
+        v.problems.append(
+            f"{len(headers)} entries contain header text "
+            f"(pages {sorted({h['page'] for h in headers})})"
+        )
+    counts = set(per_page.values())
+    if len(counts) > 1:
+        v.problems.append(f"entry count varies across pages: {sorted(counts)}")
+
+    table = Table(title=f"layout verification — {document_id}")
+    table.add_column("check")
+    table.add_column("result")
+    table.add_row("pages segmented",
+                  f"{len(pages)} of {expected_pages}"
+                  + (f"  missing {missing}" if missing else ""))
+    table.add_row("entries", f"{len(rows)}  ({sorted(counts)} per page)")
+    table.add_row("phantom crops (<2% ink)",
+                  f"{len(phantoms)}   ink p1={pct.get('p1', 0):.3f} "
+                  f"median={pct.get('median', 0):.3f}")
+    table.add_row("unparsed by position", str(v.unparsed_by_position))
+    table.add_row("edge bias", f"{bias:.2f}  (1.0 = none, >1.6 suspicious)")
+    table.add_row("header contamination", str(len(headers)))
+    for label, r in id_ranges.items():
+        table.add_row(f"ids {label}",
+                      f"{r['count']} distinct, {r['min']}–{r['max']}, "
+                      f"{r['missing']} missing")
+    console.print(table)
+
+    if v.ok:
+        console.print("[green]layout verified[/green] — no structural problems found")
+    else:
+        for p in v.problems:
+            console.print(f"[yellow]problem[/yellow] {p}")
+    if missing:
+        console.print(
+            f"[cyan]note[/cyan] {len(missing)} page(s) never segmented; their "
+            f"{len(missing) * 6} entries per band account for the missing ids"
+        )
+
+    out = project.analysis_dir(document_id, "layout") / "verification.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(v.to_dict(), ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    console.print(f"[green]wrote[/green] {out}")
 
 
 @app.command("review-queue")

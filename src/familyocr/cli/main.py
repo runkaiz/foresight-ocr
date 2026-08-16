@@ -1700,5 +1700,134 @@ def db_info() -> None:
     console.print(table)
 
 
+@app.command()
+def graph(
+    document_id: str = typer.Argument(...),
+    tag: Optional[str] = typer.Option(None, help="OCR configuration to build from"),
+    export: bool = typer.Option(True, help="Write persons.tsv and a GEDCOM"),
+) -> None:
+    """Reconstruct the people and the father links, and check them.
+
+    This is where the document becomes a family record. It is also the strongest
+    check available without ground truth: every father id must resolve, every id
+    must belong to one person, and sons of one father must carry distinct
+    ascending ranks. A recognizer error breaks one of those far more often than
+    it produces a plausible wrong answer.
+
+    Derived and rebuilt from scratch each run, preferring a human correction
+    over the recognizer for any entry that has one. Corrections belong in the
+    review app; nothing here edits a transcription.
+    """
+    from familyocr.genealogy import build_entries, store_graph
+    from familyocr.genealogy.export import write_gedcom, write_tsv
+
+    project = Project.discover()
+    conn = _open_db(project)
+    profile = _activate(project, document_id)
+    if conn.execute("SELECT 1 FROM documents WHERE id = ?",
+                    (document_id,)).fetchone() is None:
+        raise typer.BadParameter(f"unknown document {document_id!r}")
+
+    q = """SELECT sr.id AS source_region_id, sr.page_index AS page_index,
+                  b.band_index AS band_index, pe.entry_index AS entry_index,
+                  oc.transcription AS ocr_text, hc.transcription AS human_text
+           FROM source_regions sr
+           JOIN physical_entries pe ON pe.id = sr.entry_id
+           JOIN bands b ON b.id = pe.band_id
+           LEFT JOIN ocr_candidates oc ON oc.source_region_id = sr.id
+           LEFT JOIN ocr_runs orun ON orun.id = oc.ocr_run_id
+           LEFT JOIN human_corrections hc
+                  ON hc.document_id = sr.document_id
+                 AND hc.page_index = sr.page_index
+                 AND hc.entry_index = pe.entry_index
+                 AND hc.unreadable = 0
+           WHERE sr.document_id = ? AND sr.context = 'tight'
+             AND sr.role = 'entry'"""
+    params: list[Any] = [document_id]
+    if tag:
+        q += " AND orun.tag = ?"
+        params.append(tag)
+    q += " ORDER BY sr.page_index, b.band_index, pe.entry_index, oc.id"
+
+    # One row per entry: the last OCR answer wins, a human correction beats it.
+    best: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for r in conn.execute(q, params):
+        key = (r["page_index"], r["band_index"], r["entry_index"])
+        text, source = (r["human_text"], "human") if r["human_text"] else (
+            r["ocr_text"], "ocr")
+        if text is None and key in best:
+            continue
+        best[key] = {
+            "source_region_id": r["source_region_id"],
+            "page_index": r["page_index"], "band_index": r["band_index"],
+            "entry_index": r["entry_index"], "text": text, "source": source,
+        }
+    if not best:
+        raise typer.BadParameter(
+            "no transcriptions to build from; run segment and benchmark first"
+        )
+
+    band_of = profile.band_map()
+    parent_of = {label: profile.parent_of(label) for label in profile.band_labels}
+    entries = build_entries(best.values(), band_of, parent_of)
+
+    run = ProcessingRun(
+        stage="graph",
+        params={"tag": tag, "labels": profile.band_labels},
+        input_checksum=document_id,
+        compute_backend="local",
+    )
+    run_id = _start_run(conn, document_id, run)
+    result = store_graph(conn, document_id, entries, parent_of,
+                         charted=set(profile.band_labels))
+    _finish_run(conn, run_id)
+
+    table = Table(title=f"reconstructed genealogy — {document_id}")
+    table.add_column("generation")
+    table.add_column("people", justify="right")
+    table.add_column("father resolved", justify="right")
+    per_gen_resolved = {
+        r["generation"]: r["n"] for r in conn.execute(
+            "SELECT generation, COUNT(*) n FROM persons "
+            "WHERE document_id = ? AND link_status = 'resolved' GROUP BY generation",
+            (document_id,))
+    }
+    for label in profile.band_labels:
+        total = result.by_generation.get(label, 0)
+        got = per_gen_resolved.get(label, 0)
+        share = f"{got}/{total}" + (f"  ({got / total:.1%})" if total else "")
+        table.add_row(label, str(total), share)
+    console.print(table)
+
+    counts = result.counts()
+    console.print(
+        f"[green]{result.people}[/green] people from {result.entries} entries; "
+        f"links: " + ", ".join(f"{k} {v}" for k, v in
+                               sorted(result.link_status.items()))
+    )
+    if counts:
+        console.print("findings: " + ", ".join(
+            f"[yellow]{k}[/yellow] {v}" for k, v in sorted(counts.items())))
+        for f in result.findings[:8]:
+            console.print(
+                f"  {f.kind} p{f.page_index} {f.band_label}#{f.entry_index}: "
+                f"expected {f.expected} — read {f.observed}"
+            )
+        if len(result.findings) > 8:
+            console.print(f"  … {len(result.findings) - 8} more")
+    else:
+        console.print("[green]no structural findings[/green]")
+
+    if export:
+        out = project.analysis_dir(document_id, "genealogy")
+        n = write_tsv(conn, document_id, out / "persons.tsv")
+        indi, fams = write_gedcom(conn, document_id, out / f"{document_id}.ged")
+        console.print(
+            f"[green]exported[/green] {n} people → {out / 'persons.tsv'}; "
+            f"{indi} individuals in {fams} families → "
+            f"{out / (document_id + '.ged')}"
+        )
+
+
 if __name__ == "__main__":
     app()

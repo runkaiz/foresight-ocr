@@ -1243,6 +1243,28 @@ def benchmark(
     _render_benchmark(project, document_id, rows, agreements)
 
 
+def _core_run(values: set[int]) -> tuple[set[int], set[int]]:
+    """Split a band's ids into its contiguous run and the strays outside it.
+
+    Ids in a band run consecutively, so the real population sits in one dense
+    stretch. A recognizer error can land a value far outside it; keeping such a
+    value in the range turns every integer between into a "missing" person.
+
+    The run is bounded by the 1st and 99th percentile widened by half its own
+    span — generous enough that a genuinely sparse band keeps all its members,
+    tight enough that an order-of-magnitude stray is excluded.
+    """
+    if len(values) < 8:
+        return set(values), set()
+    ordered = sorted(values)
+    lo = ordered[max(0, int(len(ordered) * 0.01) - 1)]
+    hi = ordered[min(len(ordered) - 1, int(len(ordered) * 0.99))]
+    pad = max(1, (hi - lo) // 2)
+    low, high = lo - pad, hi + pad
+    core = {v for v in values if low <= v <= high}
+    return core, values - core
+
+
 def _imread(path: Path, flags: int = 1):
     """Read an image, or say which file is unreadable and why it matters.
 
@@ -1400,11 +1422,20 @@ def verify_layout(
 
     id_ranges = {}
     for label, values in sorted(ids.items()):
-        lo, hi = min(values), max(values)
-        gaps = [v for v in range(lo, hi + 1) if v not in values]
+        # Count gaps inside the band's plausible run, not between its extremes.
+        # These ids are read with the band label trusted from geometry, so a
+        # mangled numeral still yields a number: one misread 富 id of 5105
+        # stretched the range to 2–5105 and reported 4001 missing people, none
+        # of whom exist. The core run is what the band actually covers; values
+        # outside it are named as outliers instead of inflating the gap count.
+        core, outliers = _core_run(values)
+        lo, hi = min(core), max(core)
+        gaps = [v for v in range(lo, hi + 1) if v not in core]
         id_ranges[label] = {"count": len(values), "min": lo, "max": hi,
                             "missing": len(gaps),
-                            "missing_sample": gaps[:12]}
+                            "missing_sample": gaps[:12],
+                            "outliers": sorted(outliers)[:12],
+                            "outlier_count": len(outliers)}
 
     bias = edge_bias(dict(unparsed))
     v = LayoutVerification(
@@ -1440,9 +1471,12 @@ def verify_layout(
     table.add_row("edge bias", f"{bias:.2f}  (1.0 = none, >1.6 suspicious)")
     table.add_row("header contamination", str(len(headers)))
     for label, r in id_ranges.items():
+        stray = (f", {r['outlier_count']} outside the run "
+                 f"({', '.join(str(o) for o in r['outliers'])})"
+                 if r.get("outlier_count") else "")
         table.add_row(f"ids {label}",
                       f"{r['count']} distinct, {r['min']}–{r['max']}, "
-                      f"{r['missing']} missing")
+                      f"{r['missing']} missing{stray}")
     console.print(table)
 
     if mark_headers and headers:

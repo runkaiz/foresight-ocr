@@ -173,3 +173,31 @@ def test_geometry_label_needs_a_leading_numeral_run():
     e = parse_entry("書館圖書館", own_label="庶", trust_band=True)
     assert e.own_id is None
     assert e.label_from_geometry is False
+
+
+def test_numeral_confusable_is_repaired_and_recorded():
+    # 干 differs from 千 by one stroke and is never a numeral; it accounted for
+    # 231 of 337 unparsed entries across the volume.
+    e = parse_entry("庶干十四允五百六十一子", own_label="庶", trust_band=True)
+    assert e.own_id == "庶千十四"
+    assert e.numeral_repairs == {"干": "千"}
+    assert e.text == "庶干十四允五百六十一子"      # raw transcription untouched
+
+
+def test_no_repair_recorded_when_none_was_needed():
+    e = parse_entry("庶千十六允七百五十七三子", own_label="庶", trust_band=True)
+    assert e.own_id == "庶千十六"
+    assert e.numeral_repairs == {}
+
+
+def test_shu_orthographic_variant_is_accepted():
+    # 庻 is a printed variant of 庶, unlike 庚/族 which are misreads.
+    e = parse_entry("庻三百四十允二百十九子", own_label="庶")
+    assert e.own_id == "庶三百四十"
+    assert e.label_variant == {"庻": "庶"}
+
+
+def test_lookalike_numerals_are_not_blanket_rewritten():
+    # 大 resembles 六 but occurs in real text, so rewriting it would be guessing.
+    e = parse_entry("庶千十大允七百次子", own_label="庶", trust_band=True)
+    assert e.own_id != "庶千十六"

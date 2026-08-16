@@ -903,16 +903,24 @@ def segment(
 @app.command()
 def validate(
     document_id: str = typer.Argument(...),
+    tag: Optional[str] = typer.Option(None, help="OCR configuration to check"),
     from_tsv: Optional[Path] = typer.Option(
         None, "--from-tsv", exists=True, dir_okay=False,
-        help="page<TAB>band<TAB>entry<TAB>text; use before OCR results exist",
+        help="page<TAB>band<TAB>entry<TAB>text; checks a hand-made file instead",
     ),
 ) -> None:
     """Check each band's ID run for gaps, reversals and duplicates.
 
     Findings are recorded, never repaired: a number rewritten to satisfy the
     sequence would fake the agreement this check exists to measure.
+
+    The scoring itself is `harness.sequence_score`, the same function the
+    benchmark uses. This command used to carry its own copy, which quietly
+    drifted — it never learned band labels, the geometry fallback or the numeral
+    repairs, and so reported a 0.9% parse rate on output the benchmark scored at
+    97%. One implementation, one answer.
     """
+    from familyocr.ocr.harness import load_outcomes, sequence_score
     from familyocr.validation.sequence import Observation, check_sequence
 
     project = Project.discover()
@@ -921,98 +929,97 @@ def validate(
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
 
-    observations: list = []
     if from_tsv:
+        observations = []
         for line in from_tsv.read_text(encoding="utf-8").splitlines():
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.split("\t")
-            if len(parts) < 4:
-                continue
-            page, band, entry, text = parts[0], parts[1], parts[2], parts[3]
-            observations.append(
-                Observation(int(page), band, int(entry), text)
-            )
+            if len(parts) >= 4:
+                observations.append(
+                    Observation(int(parts[0]), parts[1], int(parts[2]), parts[3])
+                )
+        if not observations:
+            raise typer.BadParameter(f"no usable rows in {from_tsv}")
+        reports = check_sequence(observations)
+        seq = {
+            band: {
+                "observed": r.observed, "parsed": r.parsed,
+                "parse_rate": r.parse_rate, "clean_run_rate": r.clean_run_rate,
+                "first_value": r.first_value, "last_value": r.last_value,
+                "findings": [f.to_dict() for f in r.findings],
+            }
+            for band, r in sorted(reports.items())
+        }
         source = str(from_tsv)
     else:
-        rows = conn.execute(
-            """SELECT sr.page_index, sr.crop_id, oc.transcription, pe.entry_index,
-                      b.band_index, b.label
-               FROM ocr_candidates oc
-               JOIN source_regions sr ON sr.id = oc.source_region_id
-               JOIN physical_entries pe ON pe.id = sr.entry_id
-               JOIN bands b ON b.id = pe.band_id
-               WHERE sr.document_id = ? AND sr.context = 'tight'
-               ORDER BY sr.page_index, b.band_index, pe.entry_index""",
-            (document_id,),
-        ).fetchall()
-        for r in rows:
-            label = r["label"] or f"band{r['band_index']}"
-            observations.append(
-                Observation(r["page_index"], label, r["entry_index"],
-                            r["transcription"] or "")
+        outcomes = load_outcomes(conn, document_id)
+        if tag is not None:
+            outcomes = [o for o in outcomes if o.tag == tag]
+        if not outcomes:
+            console.print(
+                "[yellow]no OCR results to validate[/yellow] — run benchmark, "
+                "or pass --from-tsv for a hand-made file."
             )
-        source = "ocr_candidates"
-
-    if not observations:
-        console.print(
-            "[yellow]no transcriptions to validate[/yellow] — this check consumes "
-            "OCR output (Deliverable 2) or a hand-made TSV via --from-tsv."
-        )
-        raise typer.Exit(code=0)
+            raise typer.Exit(code=0)
+        # Most entries scored wins when several configurations are stored.
+        outcome = max(outcomes, key=lambda o: len(o.refs))
+        seq = sequence_score(outcome)
+        source = f"{outcome.backend}/{outcome.variant}/{outcome.tag or 'default'}"
 
     run = ProcessingRun(
         stage="validate",
-        params={"source": source, "observations": len(observations)},
+        params={"source": source, "tag": tag},
         input_checksum=doc["checksum"],
     )
     run_id = _start_run(conn, document_id, run)
 
-    reports = check_sequence(observations)
-    table = Table(title=f"sequential-ID validation ({source})")
-    table.add_column("band")
-    table.add_column("entries", justify="right")
-    table.add_column("parsed", justify="right")
-    table.add_column("range")
-    table.add_column("clean transitions", justify="right")
-    table.add_column("findings", justify="right")
+    conn.execute("DELETE FROM validation_findings WHERE document_id = ?",
+                 (document_id,))
 
-    total_findings = 0
-    for band, rep in sorted(reports.items()):
-        total_findings += len(rep.findings)
+    table = Table(title=f"sequential-ID validation ({source})")
+    for col in ("band", "entries", "parsed", "range", "clean transitions",
+                "findings"):
+        table.add_column(col, justify="right" if col != "band" else "left")
+
+    total = 0
+    for band, b in sorted(seq.items()):
+        if band.startswith("_"):
+            continue
+        total += len(b["findings"])
         table.add_row(
-            band,
-            str(rep.observed),
-            f"{rep.parsed} ({rep.parse_rate:.1%})",
-            f"{rep.first_value}–{rep.last_value}",
-            f"{rep.clean_run_rate:.2%}",
-            str(len(rep.findings)),
+            band, str(b["observed"]),
+            f"{b['parsed']} ({b['parse_rate']:.1%})",
+            f"{b['first_value']}–{b['last_value']}",
+            f"{b['clean_run_rate']:.2%}", str(len(b["findings"])),
         )
-        for f in rep.findings:
+        for f in b["findings"]:
             conn.execute(
                 """INSERT INTO validation_findings
                    (run_id, document_id, band_label, kind, page_index,
                     entry_index, expected, observed, status)
                    VALUES (?,?,?,?,?,?,?,?, 'needs_review')""",
-                (run_id, document_id, band, f.kind, f.page_index,
-                 f.entry_index, f.expected, f.observed),
+                (run_id, document_id, band, f["kind"], f["page_index"],
+                 f["entry_index"], f["expected"], f["observed"]),
             )
     conn.commit()
     _finish_run(conn, run_id)
     console.print(table)
 
+    recovered = seq.get("_label_recovered", [])
+    if recovered:
+        console.print(
+            f"[cyan]{len(recovered)}[/cyan] entries took the band label from "
+            "page geometry (recorded, transcription untouched)"
+        )
+
     out = project.analysis_dir(document_id, "validation")
     out.mkdir(parents=True, exist_ok=True)
     (out / "findings.json").write_text(
-        json.dumps(
-            {band: [f.to_dict() for f in rep.findings]
-             for band, rep in reports.items()},
-            ensure_ascii=False, indent=2,
-        ),
-        encoding="utf-8",
+        json.dumps(seq, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     console.print(
-        f"{total_findings} finding(s) → {out / 'findings.json'} "
+        f"{total} finding(s) → {out / 'findings.json'} "
         "(all marked needs_review; nothing was auto-corrected)"
     )
 

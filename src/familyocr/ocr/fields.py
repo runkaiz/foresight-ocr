@@ -54,6 +54,22 @@ ALL_LABELS = GENERATION_CHAIN
 # recognition errors and must keep failing loudly.
 LABEL_VARIANTS: dict[str, str] = {
     "敎": "教",
+    "庻": "庶",
+}
+
+# Glyphs that are not numerals at all but are recognized in place of one. 干
+# (U+5E72) differs from 千 by a single stroke and accounts for 231 of the 337
+# entries the full-book run could not parse — the whole 1000s range of the
+# volume. Unlike LABEL_VARIANTS these are recognition *errors*, not alternate
+# printed forms, so a repair is recorded per entry in
+# `ParsedEntry.numeral_repairs` and the raw transcription is left untouched.
+#
+# The bar for adding an entry here: the character must never occur legitimately
+# in a numeral, so substituting it cannot mask a real reading. 大 for 六 and 庚
+# for 庶 are NOT listed — 庚 is handled by the band geometry, and 大 sits close
+# enough to plausible text that a blanket rewrite would be guessing.
+NUMERAL_CONFUSABLES: dict[str, str] = {
+    "干": "千",
 }
 
 def canonical_label(ch: str) -> str:
@@ -92,6 +108,8 @@ class ParsedEntry:
     # The glyph that was actually printed in the label position, kept so the
     # substitution can be audited.
     observed_label: str | None = None
+    # Non-numeral glyphs repaired inside a numeral, e.g. {'干': '千'}.
+    numeral_repairs: dict[str, str] = dc_field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -152,6 +170,14 @@ def parse_entry(
     if not raw:
         return ParsedEntry(None, None, None, "", raw)
 
+    # Matching runs against a repaired copy; `raw` is what gets reported.
+    numeral_repairs: dict[str, str] = {}
+    work = raw
+    for wrong, right in NUMERAL_CONFUSABLES.items():
+        if wrong in work:
+            numeral_repairs[wrong] = right
+            work = work.replace(wrong, right)
+
     own_id = parent_id = None
     observed_label: str | None = None
     label_from_geometry = False
@@ -159,7 +185,7 @@ def parse_entry(
     expected_parent = parent_label(own_label) if own_label else None
 
     variants_seen: dict[str, str] = {}
-    for m in _ID_RE.finditer(raw):
+    for m in _ID_RE.finditer(work):
         raw_label, numeral = m.group(1), m.group(2)
         label = canonical_label(raw_label)
         if label != raw_label:
@@ -177,8 +203,8 @@ def parse_entry(
         # character rather than being trimmed on a guess.
         if (
             len(numeral) > 1
-            and end < len(raw)
-            and raw[end] in "子女"
+            and end < len(work)
+            and work[end] in "子女"
             and numeral[-1] in DIGITS
             and numeral[-2] in DIGITS
         ):
@@ -209,17 +235,17 @@ def parse_entry(
     if own_id is None and trust_band and own_label:
         # No id carried the expected label. If the entry opens with a numeral
         # run, that is the id and the label glyph was simply misrecognized.
-        head = raw.split("\n", 1)[0].strip()
+        head = work.split("\n", 1)[0].strip()
         m = _LEADING_NUMERAL.match(head)
         if m:
             own_id = own_label + m.group("num")
             observed_label = m.group("pre")
             label_from_geometry = True
-            start = raw.index(head)
+            start = work.index(head)
             consumed.append((start, start + m.end()))
 
     order = None
-    for om in _ORDER_RE.finditer(raw):
+    for om in _ORDER_RE.finditer(work):
         # An id numeral immediately followed by 子/女 would match here too; only
         # accept a match that starts outside every id already claimed.
         if not any(a <= om.start() < b for a, b in consumed):
@@ -231,14 +257,14 @@ def parse_entry(
         # A bare 子 is the marker for an only son. It carries the same rank as
         # 長子 but is written differently, so it is recorded as it appears and
         # ranked by `order_rank` rather than rewritten.
-        for i, ch in enumerate(raw):
+        for i, ch in enumerate(work):
             if ch in "子女" and not any(a <= i < b for a, b in consumed):
                 order = ch
                 consumed.append((i, i + 1))
                 break
 
     kept = "".join(
-        ch for i, ch in enumerate(raw)
+        ch for i, ch in enumerate(work)
         if not any(a <= i < b for a, b in consumed)
     ).strip()
 
@@ -256,7 +282,7 @@ def parse_entry(
 
     return ParsedEntry(
         own_id, parent_id, order, kept, raw, variants_seen, parent_name,
-        label_from_geometry, observed_label,
+        label_from_geometry, observed_label, numeral_repairs,
     )
 
 

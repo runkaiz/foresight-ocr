@@ -1,0 +1,19 @@
+# Hand-verified full entry transcriptions. Seed of the Deliverable-2 gold set.
+# Read at 0.62x from artifacts/crops/丙辰庶富教1/original/*_p0058_b0_e*_tight.png
+#
+# Columns: page<TAB>band<TAB>entry_index<TAB>transcription
+# entry_index 0 is the rightmost column (reading order is right to left).
+# An entry holds three printed fields, concatenated here without separators:
+#   own id | father's id (previous generation band 允) | birth order
+#
+# A bare 子 is the marker for an only son (confirmed with the project owner) and
+# ranks as 長子; it is recorded here exactly as printed.
+#
+# Deliberately incomplete. One entry of this band is NOT included:
+#   b0 e03 — the first numeral of the father's id is physically damaged
+# Guessing it would corrupt the reference the benchmark is scored against.
+58	庶	0	庶三百三十五允二百八十六次子
+58	庶	1	庶三百三十六允二百四十九長子
+58	庶	2	庶三百三十七允三百長子
+58	庶	4	庶三百三十九允二百十四長子
+58	庶	5	庶三百四十允二百十九子

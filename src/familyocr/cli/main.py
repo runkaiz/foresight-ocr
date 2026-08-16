@@ -1766,6 +1766,14 @@ def graph(
         raise typer.BadParameter(
             "no transcriptions to build from; run segment and benchmark first"
         )
+    if not any(r["text"] for r in best.values()):
+        # Entries exist but none has been read yet. Building anyway produces
+        # "0 people, no structural findings", which reads as a clean result for
+        # a document nobody has transcribed.
+        raise typer.BadParameter(
+            f"{len(best)} entries are segmented but none has a transcription; "
+            f"run `familyocr benchmark {document_id}` first"
+        )
 
     band_of = profile.band_map()
     parent_of = {label: profile.parent_of(label) for label in profile.band_labels}

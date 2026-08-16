@@ -192,11 +192,24 @@ CREATE INDEX IF NOT EXISTS idx_runs_stage ON processing_runs(document_id, stage,
 """
 
 
+# Long enough to outlast a segmentation page's write burst, short enough that a
+# genuine deadlock still surfaces as an error rather than a hang.
+_BUSY_TIMEOUT_S = 60.0
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=_BUSY_TIMEOUT_S)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Stages are long and write in bursts: OCR of one volume can run while
+    # another volume is being segmented, and the review server reads while both
+    # write. Under the default rollback journal a second writer fails instantly
+    # with "database is locked" and takes an hour of work with it. WAL lets
+    # readers run against writers, and the busy timeout makes a writer wait its
+    # turn instead of dying.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_S * 1000)}")
     return conn
 
 

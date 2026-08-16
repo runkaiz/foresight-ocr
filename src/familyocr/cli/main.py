@@ -1177,7 +1177,10 @@ def benchmark(
             if limit:
                 refs = refs[:limit]
             if not refs:
-                console.print(f"[yellow]no crops[/yellow] for {variant}/{context}")
+                console.print(
+                    f"[yellow]no crops[/yellow] for {variant}/{context}; "
+                    f"on disk: {', '.join(_crop_variants(crops_root)) or 'none'}"
+                )
                 continue
             for backend_name in backend_names:
                 console.print(
@@ -1194,11 +1197,29 @@ def benchmark(
                 conn.commit()
 
     _finish_run(conn, run_id)
+    if not collected:
+        # Every requested combination was empty. Rendering the table here would
+        # print an OCR benchmark with no rows and exit successfully, which reads
+        # as "the run found nothing to say" rather than "the run never ran" —
+        # and it overwrites results.json on the way out.
+        console.print(
+            f"[red]no crops matched[/red] {variant_names} x {context_names}; "
+            f"variants on disk: {', '.join(_crop_variants(crops_root)) or 'none'}. "
+            "Re-run `segment` with the variant you want, or pass --variants."
+        )
+        raise typer.Exit(1)
     # Summarize everything stored, not just what this invocation ran. A partial
     # run — one backend, one variant — would otherwise overwrite results.json
     # with a single row and lose the rest of the grid.
     rows, agreements = summarize(load_outcomes(conn, document_id), gold)
     _render_benchmark(project, document_id, rows, agreements)
+
+
+def _crop_variants(crops_root: Path) -> list[str]:
+    """Which crop variants `segment` actually wrote, for error messages."""
+    if not crops_root.is_dir():
+        return []
+    return sorted(d.name for d in crops_root.iterdir() if d.is_dir())
 
 
 def _render_benchmark(project, document_id: str, rows, agreements) -> None:

@@ -1090,8 +1090,7 @@ def validate(
     )
     run_id = _start_run(conn, document_id, run)
 
-    conn.execute("DELETE FROM validation_findings WHERE document_id = ?",
-                 (document_id,))
+    _clear_findings(conn, document_id, SEQUENCE_FINDING_KINDS)
 
     table = Table(title=f"sequential-ID validation ({source})")
     for col in ("band", "entries", "parsed", "range", "clean transitions",
@@ -1249,6 +1248,23 @@ def benchmark(
     # with a single row and lose the rest of the grid.
     rows, agreements = summarize(load_outcomes(conn, document_id), gold)
     _render_benchmark(project, document_id, rows, agreements)
+
+
+# Two stages write findings for the same document and the review app shows them
+# together. Each clears only what it produced, so re-running one does not erase
+# the other's — `validate` used to delete every finding for the document.
+SEQUENCE_FINDING_KINDS = ("gap", "non_monotonic", "duplicate", "unparsed")
+GRAPH_FINDING_KINDS = ("duplicate_id", "unresolved_father", "no_father_field",
+                       "order_conflict", "order_reversed")
+
+
+def _clear_findings(conn, document_id: str, kinds: tuple[str, ...]) -> None:
+    marks = ",".join("?" * len(kinds))
+    conn.execute(
+        f"DELETE FROM validation_findings WHERE document_id = ? "
+        f"AND kind IN ({marks})",
+        (document_id, *kinds),
+    )
 
 
 def _core_run(values: set[int]) -> tuple[set[int], set[int]]:
@@ -1788,6 +1804,22 @@ def graph(
     run_id = _start_run(conn, document_id, run)
     result = store_graph(conn, document_id, entries, parent_of,
                          charted=set(profile.band_labels))
+
+    # The structural checks are only useful if they reach the person doing the
+    # reviewing, and the review app reads validation_findings. Without this the
+    # strongest signal available — a father who does not exist, two people
+    # sharing an id — stayed in a terminal table nobody has open while reviewing.
+    _clear_findings(conn, document_id, GRAPH_FINDING_KINDS)
+    for f in result.findings:
+        conn.execute(
+            """INSERT INTO validation_findings
+               (run_id, document_id, band_label, kind, page_index,
+                entry_index, expected, observed, status)
+               VALUES (?,?,?,?,?,?,?,?, 'needs_review')""",
+            (run_id, document_id, f.band_label, f.kind, f.page_index,
+             f.entry_index, f.expected, f.observed),
+        )
+    conn.commit()
     _finish_run(conn, run_id)
 
     table = Table(title=f"reconstructed genealogy — {document_id}")

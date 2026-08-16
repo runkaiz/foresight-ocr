@@ -184,6 +184,50 @@ class ExtractedPage:
     height: int
 
 
+def _stream_bytes(obj) -> bytes:
+    """The embedded stream, trimmed to the length the PDF declares for it.
+
+    One page of 丙辰清廉麗熙2 carries 107 bytes of trailing junk past its
+    `/Length`, which parses as a fourth JP2 box with an absurd size and makes
+    every decoder reject the file. The bytes beyond `/Length` are not part of
+    the stream, so dropping them preserves the original rather than repairing
+    it.
+    """
+    data = obj.read_raw_bytes()
+    try:
+        declared = int(obj.get("/Length"))
+    except (TypeError, ValueError):
+        return data
+    return data[:declared] if 0 < declared < len(data) else data
+
+
+def _decode_to_png(raw_path: Path, decoded_path: Path) -> None:
+    """Decode an embedded image, falling back when Pillow gives up.
+
+    Pillow refuses a JPEG 2000 codestream that stops without its end-of-codestream
+    marker; OpenJPEG decodes the same file with a warning and returns the full
+    image. A scan that is merely missing its last marker is a page of people, so
+    it is worth the second attempt.
+    """
+    try:
+        with Image.open(raw_path) as im:
+            im.load()
+            im.save(decoded_path, format="PNG", optimize=False, compress_level=1)
+            return
+    except OSError as exc:
+        first_error = exc
+
+    import cv2
+
+    img = cv2.imread(str(raw_path), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise OSError(
+            f"{raw_path} could not be decoded by Pillow ({first_error}) or "
+            f"OpenJPEG; the embedded scan is unrecoverable."
+        ) from first_error
+    cv2.imwrite(str(decoded_path), img)
+
+
 def extract_originals(
     path: Path,
     raw_dir: Path,
@@ -218,7 +262,7 @@ def extract_originals(
             raw_path = raw_dir / f"p{idx:04d}{ext}"
             if ext in (".jp2", ".jpg"):
                 # Single image-codec filter: the raw stream IS a valid image file.
-                data = obj.read_raw_bytes()
+                data = _stream_bytes(obj)
                 checksum = sha256_bytes(data)
                 if force or not raw_path.exists():
                     raw_path.write_bytes(data)
@@ -237,9 +281,7 @@ def extract_originals(
 
             decoded_path = decoded_dir / f"p{idx:04d}.png"
             if force or not decoded_path.exists():
-                with Image.open(raw_path) as im:
-                    im.load()
-                    im.save(decoded_path, format="PNG", optimize=False, compress_level=1)
+                _decode_to_png(raw_path, decoded_path)
 
             with Image.open(decoded_path) as im:
                 w, h = im.size

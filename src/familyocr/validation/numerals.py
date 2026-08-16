@@ -1,7 +1,8 @@
 """Chinese numeral parsing for 雁序圖 entry IDs.
 
-Entry IDs in this volume are written as 庶/富/教 plus a numeral: 庶五十九,
-富六百一十, 教千百九十三. The numerals use the ordinary multiplicative system,
+Entry IDs are written as a generation label plus a numeral — 庶五十九, 富六百一十,
+教千百九十三 in one volume, 清千八百四十九 in another. The numerals use the
+ordinary multiplicative system,
 with two wrinkles common in printed genealogies:
 
 - a leading unit with an implied 一 (千百九十三 = 1193, not 100+93)
@@ -15,6 +16,7 @@ sequence check that this whole validation stage rests on.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 
 DIGITS: dict[str, int] = {
@@ -38,11 +40,34 @@ UNITS: dict[str, int] = {
 
 CONTRACTED: dict[str, int] = {"廿": 20, "卅": 30, "卌": 40}
 
-BAND_LABELS = ("庶", "富", "教")
+# Which characters can open an id is document data, not a constant: 丙辰庶富教1
+# uses 庶/富/教 and 丙辰清廉麗熙2 uses 清/廉/麗/熙. Hard-coding the first corpus
+# here made `parse_entry_id` reject every id in the other volumes outright.
+#
+# The band cannot simply be "any Han character" either — `五十` would then read
+# as band 五, number 十. So the set comes from the active document profile, with
+# the union of every label seen in the corpus as the fallback for callers that
+# have not set one.
+_FALLBACK_LABELS = ("允", "庶", "富", "教", "清", "廉", "麗", "熙")
 
-_ID_RE = re.compile(
-    r"^\s*(?P<band>[" + "".join(BAND_LABELS) + r"])?\s*(?P<num>[^\s]+?)\s*$"
-)
+
+@lru_cache(maxsize=16)
+def _id_re(labels: tuple[str, ...]) -> re.Pattern[str]:
+    return re.compile(
+        r"^\s*(?P<band>[" + "".join(labels) + r"])?\s*(?P<num>[^\s]+?)\s*$"
+    )
+
+
+def _band_chars() -> tuple[str, ...]:
+    """Every character that may open an id: the corpus union plus this volume's.
+
+    A union rather than only the active profile's labels, because no generation
+    label is also a numeral character — so admitting the others costs no
+    ambiguity, and the parser then works whether or not a profile has been set.
+    """
+    from familyocr.context import generation_chain
+
+    return tuple(dict.fromkeys((*_FALLBACK_LABELS, *generation_chain())))
 
 
 @dataclass
@@ -90,7 +115,7 @@ def parse_numeral(text: str) -> int | None:
 def parse_entry_id(text: str) -> ParsedNumeral:
     """Parse a full entry ID such as `庶五百八十七`."""
     raw = (text or "").strip()
-    m = _ID_RE.match(raw)
+    m = _id_re(_band_chars()).match(raw)
     if not m:
         return ParsedNumeral(raw, None, None, False, "unrecognised id format")
     band = m.group("band")

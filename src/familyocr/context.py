@@ -42,3 +42,30 @@ def band_labels() -> dict[int, str]:
 
 def generation_chain() -> list[str]:
     return _active.generation_chain
+
+
+class _BandLabels(dict):
+    """Band index -> label, read from whichever profile is active right now.
+
+    A mapping rather than a function because it replaced a module-level dict
+    that callers already used as one. It looks up on every access instead of
+    caching, so a module imported before `set_profile` still sees the right
+    labels — which is the whole reason the constant had to go.
+    """
+
+    def get(self, key, default=None):
+        return band_labels().get(key, default)
+
+    def items(self):
+        return band_labels().items()
+
+    def __getitem__(self, key):
+        return band_labels()[key]
+
+    def __contains__(self, key):
+        return key in band_labels()
+
+
+#: Shared by the harness, the review app and the CLI. Defined once here because
+#: two identical copies had already drifted apart in the places that used it.
+BAND_LABELS = _BandLabels()

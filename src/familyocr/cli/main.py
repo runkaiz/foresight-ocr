@@ -1161,6 +1161,24 @@ def _render_benchmark(project, document_id: str, rows, agreements) -> None:
     console.print(f"[green]results[/green] {out / 'results.json'}")
 
 
+@app.command()
+def review(
+    document_id: str = typer.Argument(...),
+    port: int = typer.Option(8765),
+    tag: Optional[str] = typer.Option(
+        None, help="OCR configuration to pre-fill from; default is the latest"
+    ),
+    reviewer: str = typer.Option("local", help="Recorded with each correction"),
+    open_browser: bool = typer.Option(True, "--open/--no-open"),
+) -> None:
+    """Page-at-a-time review app for verifying transcriptions."""
+    from familyocr.review import serve
+
+    project = Project.discover()
+    serve(project, document_id, port=port, tag=tag, reviewer=reviewer,
+          open_browser=open_browser)
+
+
 @app.command("review-queue")
 def review_queue(
     document_id: str = typer.Argument(...),

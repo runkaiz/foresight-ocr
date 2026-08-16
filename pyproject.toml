@@ -28,6 +28,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/familyocr"]
+artifacts = ["src/familyocr/review/app.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -354,3 +354,38 @@ def _parse_fields(
 # are alternatives on the page: whichever one the entry carries is the link to
 # the previous generation.
 FIELDS = ("own_id", "parent_id", "parent_name", "order")
+
+
+def compose_entry(
+    own_id: str | None, parent: str | None, birth_order: str | None
+) -> str:
+    """Assemble the three printed fields back into an entry, as printed.
+
+    Both charted volumes print own id, then the father's id or name, then the
+    birth-order marker, so joining in that order reproduces the line rather than
+    inventing a format. Reading it back through `parse_entry` returns the same
+    three fields, which is the property that lets a reviewer edit fields while
+    the record stays a transcription.
+
+    What is deliberately not preserved is the recognizer's line breaking, and
+    anything it picked up that the page does not print — the library stamp reads
+    as 國 and even as `IBRARY` in the middle band. Those are not the reviewer's
+    text to keep.
+    """
+    return "".join(part for part in (own_id, parent, birth_order) if part)
+
+
+def own_id_from_digits(label: str, digits: str) -> str | None:
+    """`(庶, "343")` -> `庶三百四十三`, for a reviewer typing arabic numerals.
+
+    Entering 庶三百四十三 by keyboard is several times the work of entering 343,
+    and the transcription that gets stored is identical. Returns None when the
+    input is not a plain non-negative integer, so a reviewer typing CJK directly
+    is left alone.
+    """
+    from familyocr.validation.numerals import format_numeral
+
+    text = (digits or "").strip()
+    if not text.isdigit():
+        return None
+    return f"{label}{format_numeral(int(text))}"

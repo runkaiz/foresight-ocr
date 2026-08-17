@@ -18,13 +18,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from familyocr.ocr.fields import compose_entry, own_id_from_digits
 from familyocr.persistence import connect, init_schema
 from familyocr.project import Project
 from familyocr.review.data import (
+    export_document,
     export_verified,
     page_image,
     latest_ocr_tag,
     page_entries,
+    page_summary,
     progress,
     reviewable_pages,
     save_correction,
@@ -84,14 +87,25 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
             if url.path == "/api/pages":
                 conn = _conn()
                 try:
+                    summary = page_summary(conn, document_id)
                     self._json({
                         "document_id": document_id,
-                        "pages": reviewable_pages(conn, document_id),
+                        "pages": [s["page"] for s in summary],
+                        "summary": summary,
                         "progress": progress(conn, document_id),
                         "tag": tag,
                     })
                 finally:
                     conn.close()
+                return
+
+            if url.path == "/api/numeral":
+                # A reviewer types 343; the page says 三百四十三. Converting here
+                # rather than in the browser keeps one implementation of how this
+                # book writes numbers, which is also the one the parser reads.
+                label = q.get("label", [""])[0]
+                digits = q.get("n", [""])[0]
+                self._json({"text": own_id_from_digits(label, digits)})
                 return
 
             if url.path == "/api/page":
@@ -148,17 +162,30 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
             if url.path == "/api/correction":
                 conn = _conn()
                 try:
+                    # Fields are what the reviewer edits; a transcription is what
+                    # gets stored. Composing here means the record stays a line
+                    # of the page rather than becoming a private format.
+                    text = payload.get("transcription")
+                    if text is None and "fields" in payload:
+                        f = payload["fields"] or {}
+                        text = compose_entry(
+                            f.get("own_id"), f.get("parent"), f.get("birth_order")
+                        )
                     save_correction(
                         conn, document_id,
                         page_index=int(payload["page_index"]),
                         band_label=payload["band_label"],
                         entry_index=int(payload["entry_index"]),
-                        transcription=payload.get("transcription") or None,
+                        transcription=text or None,
                         unreadable=bool(payload.get("unreadable")),
                         reviewer=reviewer,
                         note=payload.get("note") or None,
                     )
-                    self._json({"ok": True, "progress": progress(conn, document_id)})
+                    self._json({
+                        "ok": True,
+                        "transcription": text or None,
+                        "progress": progress(conn, document_id),
+                    })
                 finally:
                     conn.close()
                 return
@@ -166,10 +193,14 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
             if url.path == "/api/export":
                 conn = _conn()
                 try:
-                    out = (project.root / "benchmarks" / "gold"
-                           / f"{document_id}_verified.tsv")
-                    n = export_verified(conn, document_id, out)
-                    self._json({"ok": True, "written": n, "path": str(out)})
+                    out = (project.analysis_dir(document_id, "transcription")
+                           / f"{document_id}.tsv")
+                    counts = export_document(conn, document_id, out, tag)
+                    gold = (project.root / "benchmarks" / "gold"
+                            / f"{document_id}_verified.tsv")
+                    counts["verified"] = export_verified(conn, document_id, gold)
+                    counts["verified_path"] = str(gold)
+                    self._json({"ok": True, **counts})
                 finally:
                     conn.close()
                 return

@@ -17,7 +17,8 @@
   .muted { color:var(--muted); }
   .bar { flex:1; height:6px; background:var(--line); border-radius:3px; min-width:80px; }
   .bar > div { height:100%; background:var(--ok); border-radius:3px; width:0; }
-  main { display:grid; grid-template-columns:1fr 460px; height:calc(100vh - 44px); }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 250px 540px;
+         height:calc(100vh - 44px); }
   #sheets { overflow:auto; padding:12px; display:flex; gap:14px; align-items:flex-start;
             background:#0e1013; }
   .sheet { position:relative; flex:0 0 auto; }
@@ -35,27 +36,51 @@
   #list { overflow:auto; border-left:1px solid var(--line); background:var(--bg); }
   .grp { padding:4px 10px; background:var(--panel); font-size:12px;
          position:sticky; top:0; z-index:2; border-bottom:1px solid var(--line); }
-  .row { display:grid; grid-template-columns:52px 1fr; gap:8px; padding:6px 10px;
-         border-bottom:1px solid var(--line); align-items:center; }
+  .row { display:grid; grid-template-columns:46px 1.15fr 1.15fr .75fr;
+         gap:6px; padding:6px 10px; border-bottom:1px solid var(--line);
+         align-items:center; }
   .row.sel { background:#232733; }
   .row.flagged { border-left:3px solid var(--bad); }
   .row.done { border-left:3px solid var(--ok); }
   .row.header { opacity:.55; }
   .idx { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
-  input[type=text] { width:100%; padding:6px 8px; font-size:18px; background:#0f1115;
+  input[type=text] { width:100%; padding:5px 7px; font-size:17px; background:#0f1115;
                      color:var(--text); border:1px solid var(--line); border-radius:6px; }
   input[type=text]:focus { outline:2px solid var(--accent); border-color:transparent; }
   input.changed { border-color:var(--warn); }
-  .meta { grid-column:2; font-size:11px; color:var(--muted); }
+  input.digits { border-color:var(--accent); }
+  .meta { grid-column:2 / -1; font-size:11px; color:var(--muted); }
   .meta b { color:var(--bad); }
+  .meta .exp { color:var(--warn); }
+  /* The crop of the entry being read, in its own column and as large as the
+     window allows. An entry is a tall narrow column of glyphs, so height is the
+     only dimension that matters — shown inline among the rows it came out about
+     30 px wide, which is no help to somebody deciding between 三 and 五. Fixed
+     in place rather than moving with the selection, so the eye knows where to
+     look. */
+  #croppane { display:flex; flex-direction:column; align-items:center; gap:6px;
+              padding:8px; background:#0b0d10; border-left:1px solid var(--line);
+              overflow:auto; }
+  #croppane img { max-height:calc(100vh - 96px); max-width:100%; cursor:zoom-in; }
+  #croppane .cap { font-size:11px; color:var(--muted); text-align:center; }
+  #croppane .none { color:var(--muted); font-size:12px; margin-top:20px; }
+  /* What the recognizer actually returned, when it does not agree with the
+     fields. On the harder pages it reads every glyph but scrambles their order
+     across lines, and a reviewer who cannot see that has to retype an entry
+     whose characters were all present. */
+  .raw { grid-column:2 / -1; font-size:12px; color:var(--muted);
+         background:#0f1115; border:1px solid var(--line); border-radius:5px;
+         padding:3px 6px; white-space:pre-wrap; word-break:break-all; }
+  .raw b { color:var(--text); font-weight:600; }
   footer { position:fixed; bottom:0; right:0; padding:4px 12px; background:var(--panel);
            border-top:1px solid var(--line); border-left:1px solid var(--line);
-           font-size:11px; color:var(--muted); display:flex; gap:14px; }
+           font-size:11px; color:var(--muted); display:flex; gap:12px; }
   kbd { background:#0f1115; border:1px solid var(--line); border-radius:4px;
         padding:0 4px; color:var(--text); }
   button, select { background:#262b34; color:var(--text); border:1px solid var(--line);
                    border-radius:6px; padding:4px 8px; cursor:pointer; font-size:13px; }
   button:hover { border-color:var(--accent); }
+  #flagcount { color:var(--bad); }
 </style>
 </head>
 <body>
@@ -72,27 +97,32 @@
   </label>
   <label class="muted">spread
     <select id="spread" onchange="reload()">
-      <option value="1">1</option><option value="2" selected>2</option>
+      <option value="1" selected>1</option><option value="2">2</option>
       <option value="3">3</option>
     </select>
   </label>
   <label class="muted">zoom
     <input id="zoom" type="range" min="20" max="100" value="42" oninput="setZoom()">
   </label>
+  <span id="flagcount"></span>
   <span class="muted" id="frame"></span>
   <div class="bar"><div id="prog"></div></div>
   <span class="muted" id="progtext"></span>
-  <button onclick="exportGold()">export</button>
+  <button onclick="exportAll()">export</button>
 </header>
 
 <main>
   <div id="sheets"></div>
+  <div id="croppane"><span class="none">select an entry</span></div>
   <div id="list"></div>
 </main>
 
 <footer>
   <span><kbd>↑</kbd><kbd>↓</kbd> entry</span>
-  <span><kbd>⏎</kbd> accept</span>
+  <span><kbd>⇥</kbd> field</span>
+  <span><kbd>⏎</kbd> confirm</span>
+  <span><kbd>⌥E</kbd> take expected</span>
+  <span><kbd>⌥N</kbd> next flagged</span>
   <span><kbd>⌘←→</kbd> page</span>
   <span><kbd>⌥U</kbd> unreadable</span>
   <span><kbd>Esc</kbd> revert</span>
@@ -100,15 +130,16 @@
 </footer>
 
 <script>
-let PAGES=[], IDX=0, SHEETS=[], FLAT=[], SEL=0, TAG=null;
+let PAGES=[], SUMMARY=[], IDX=0, SHEETS=[], FLAT=[], SEL=0, TAG=null;
+const FIELDS = ['own_id','parent','birth_order'];
 const $ = s => document.querySelector(s);
 const status = m => { $('#status').textContent = m;
   clearTimeout(window._t); window._t = setTimeout(()=>$('#status').textContent='',2200); };
-const esc = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function boot(){
   const r = await (await fetch('/api/pages')).json();
-  PAGES=r.pages; TAG=r.tag;
+  PAGES=r.pages; SUMMARY=r.summary||[]; TAG=r.tag;
   $('#doc').textContent=r.document_id;
   setProgress(r.progress);
   const want = +location.hash.replace('#p','');
@@ -141,6 +172,8 @@ async function load(i){
   SEL = 0;
   $('#page').textContent = SHEETS.map(s=>s.page).join('–');
   $('#pagepos').textContent = `(${IDX+1}/${PAGES.length})`;
+  const flags = FLAT.filter(e=>e.flagged).length;
+  $('#flagcount').textContent = flags ? `${flags} disputed` : '';
   if(SHEETS[0]){
     $('#goto').value = SHEETS[0].page;
     // replaceState, not a hash assignment: this is recording where the reviewer
@@ -166,7 +199,7 @@ function render(){
       const [x0,y0,x1,y1] = e.bbox;
       const cls = ['box','b'+(e.band_index%4)];
       if (e.role !== 'entry') cls.push('header');
-      if (e.findings.length) cls.push('flagged');
+      if (e.flagged) cls.push('flagged');
       if (e.human!=null || e.unreadable) cls.push('done');
       return `<rect class="${cls.join(' ')}" data-i="${i}" x="${x0}" y="${y0}"
                 width="${x1-x0}" height="${y1-y0}"></rect>`;
@@ -195,55 +228,119 @@ function render(){
         list.appendChild(h);
       }
       const i = idx++;
-      const value = e.human!=null ? e.human : (e.machine||'');
       const row = document.createElement('div');
-      row.className = 'row'+(i===SEL?' sel':'')+(e.findings.length?' flagged':'')
+      row.className = 'row'+(i===SEL?' sel':'')+(e.flagged?' flagged':'')
         +((e.human!=null||e.unreadable)?' done':'')+(e.role!=='entry'?' header':'');
       row.dataset.i = i;
-      const f = e.findings.map(x=>`<b>${x.kind}</b>${x.expected?' → '+x.expected:''}`).join(' ');
+
+      const findings = e.findings.map(x=>`<b>${x.kind}</b>`).join(' ');
+      const expected = e.expected_own_id
+        ? `<span class="exp">the run wants ${esc(e.expected_own_id)} — ⌥E</span>` : '';
+      const leftover = e.leftover
+        ? `<span>unplaced: ${esc(e.leftover)}</span>` : '';
+      const notes = [
+        e.role!=='entry' ? 'header — not a person' : '',
+        e.unreadable ? 'unreadable' : '',
+        findings, expected, leftover,
+      ].filter(Boolean).join(' · ');
+
+      // Show the reading itself whenever the fields do not account for it: the
+      // characters are usually all there and only their order is wrong, which
+      // is a glance to fix and a retype to miss.
+      const composed = FIELDS.map(f=>e[f]||'').join('');
+      const flat = (e.machine||'').replace(/\s+/g,' ').trim();
+      const showRaw = flat && flat.replace(/\s/g,'') !== composed;
+
       row.innerHTML = `
         <div class="idx">${e.band_label}·${e.entry_index}</div>
-        <div><input type="text" value="${esc(value)}" data-machine="${esc(e.machine||'')}"
-             data-i="${i}"></div>
-        ${(f||e.unreadable||e.role!=='entry') ? `<div class="meta">${
-          e.role!=='entry'?'header — not a person. ':''}${e.unreadable?'unreadable. ':''}${f}</div>` : ''}`;
+        ${FIELDS.map(f=>`<div><input type="text" data-i="${i}" data-f="${f}"
+            value="${esc(e[f])}" placeholder="${f==='own_id'?'own':f==='parent'?'father':'order'}"
+            ></div>`).join('')}
+        ${notes ? `<div class="meta">${notes}</div>` : ''}
+        ${showRaw ? `<div class="raw">read <b>${esc(flat)}</b></div>` : ''}`;
       list.appendChild(row);
     });
   });
   list.querySelectorAll('input[type=text]').forEach(inp=>{
-    inp.addEventListener('input', ()=> inp.classList.toggle('changed', inp.value!==inp.dataset.machine));
+    inp.dataset.orig = inp.value;
+    inp.addEventListener('input', ()=>{
+      inp.classList.toggle('changed', inp.value!==inp.dataset.orig);
+      // Digits are an instruction to write a numeral, not a transcription.
+      inp.classList.toggle('digits', /^\d+$/.test(inp.value.trim()));
+    });
     inp.addEventListener('focus', ()=>{ SEL=+inp.dataset.i; mark(); });
+    inp.addEventListener('blur', ()=> normalize(inp));
   });
   setZoom();
   focusSel();
 }
 
+// A reviewer types 343 and means 三百四十三. The conversion lives on the server
+// so there is one description of how this book writes numbers — the same one
+// the parser reads back.
+async function normalize(inp){
+  const raw = inp.value.trim();
+  if(!/^\d+$/.test(raw)) return;
+  const e = FLAT[+inp.dataset.i];
+  const label = inp.dataset.f==='own_id' ? e.own_label
+              : inp.dataset.f==='parent' ? e.parent_label : null;
+  if(!label){ return; }
+  const r = await (await fetch(`/api/numeral?label=${encodeURIComponent(label)}&n=${raw}`)).json();
+  if(r.text){ inp.value = r.text; inp.classList.remove('digits');
+              inp.classList.toggle('changed', inp.value!==inp.dataset.orig); }
+}
+
 function mark(){
   document.querySelectorAll('.row').forEach(r=>r.classList.toggle('sel', +r.dataset.i===SEL));
   document.querySelectorAll('rect.box').forEach(r=>r.classList.toggle('sel', +r.dataset.i===SEL));
+  showCrop();
 }
-function focusSel(){
-  const inp = document.querySelector(`input[data-i="${SEL}"]`);
+function showCrop(){
+  const e = FLAT[SEL], pane = $('#croppane');
+  if(!e){ pane.innerHTML = '<span class="none">select an entry</span>'; return; }
+  pane.innerHTML = e.crop_path
+    ? `<img src="/img?path=${encodeURIComponent(e.crop_path)}" alt="entry crop"
+         onclick="window.open(this.src)">
+       <div class="cap">p${e.page_index} · ${e.band_label}·${e.entry_index}
+         · click to open full size</div>`
+    : '<span class="none">no crop on disk for this entry</span>';
+}
+function focusSel(field){
+  const want = field || 'own_id';
+  const inp = document.querySelector(`input[data-i="${SEL}"][data-f="${want}"]`);
   if(inp){ inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
     inp.closest('.row').scrollIntoView({block:'nearest'}); }
   const box = document.querySelector(`rect.box[data-i="${SEL}"]`);
   if(box) box.closest('.sheet').scrollIntoView({block:'nearest', inline:'nearest'});
   mark();
 }
+function fieldsOf(i){
+  const out = {};
+  document.querySelectorAll(`input[data-i="${i}"]`).forEach(inp=>{
+    out[inp.dataset.f] = inp.value.trim() || null;
+  });
+  return out;
+}
 
 async function accept(i){
-  const inp = document.querySelector(`input[data-i="${i}"]`);
-  if(!inp) return;
   const e = FLAT[i];
+  if(!e) return;
+  const inp = document.activeElement;
+  if(inp && inp.dataset && inp.dataset.i==String(i)) await normalize(inp);
+  const fields = fieldsOf(i);
   const r = await (await fetch('/api/correction',{method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({page_index:e.page_index, band_label:e.band_label,
-      entry_index:e.entry_index, transcription:inp.value, unreadable:false})})).json();
+      entry_index:e.entry_index, fields, unreadable:false})})).json();
   if(r.progress) setProgress(r.progress);
-  e.human = inp.value;
-  inp.closest('.row').classList.add('done');
+  e.human = r.transcription;
+  Object.assign(e, fields);
+  const row = document.querySelector(`.row[data-i="${i}"]`);
+  if(row) row.classList.add('done');
   const box = document.querySelector(`rect.box[data-i="${i}"]`);
   if(box) box.classList.add('done');
+  document.querySelectorAll(`input[data-i="${i}"]`).forEach(x=>{
+    x.dataset.orig = x.value; x.classList.remove('changed'); });
 }
 async function markUnreadable(i){
   const e = FLAT[i];
@@ -254,11 +351,41 @@ async function markUnreadable(i){
   if(r.progress) setProgress(r.progress);
   e.unreadable = true; status('marked unreadable'); render();
 }
-async function exportGold(){
+function takeExpected(){
+  const e = FLAT[SEL];
+  if(!e || !e.expected_own_id) { status('nothing expected here'); return; }
+  const inp = document.querySelector(`input[data-i="${SEL}"][data-f="own_id"]`);
+  if(inp){ inp.value = e.expected_own_id; inp.classList.add('changed');
+           inp.focus(); status(`took ${e.expected_own_id}`); }
+}
+async function exportAll(){
+  status('exporting…');
   const r = await (await fetch('/api/export',{method:'POST'})).json();
-  status(`exported ${r.written} verified entries`);
+  status(`${r.entries} entries → ${r.path} (${r.human} by hand)`);
 }
 function go(d){ load(IDX + d*Math.max(1, +$('#spread').value)); }
+
+// Flagged entries are where the sequence checksum disagrees with the reading.
+// Walking to the next one is the difference between reviewing a page and
+// hunting through it; past the end of the spread it carries on to the next page
+// that has one, so a clean run of pages costs no keystrokes.
+function nextFlagged(dir){
+  const order = dir>0 ? [...FLAT.keys()] : [...FLAT.keys()].reverse();
+  for(const i of order){
+    if((dir>0 ? i>SEL : i<SEL) && FLAT[i].flagged){ SEL=i; focusSel(); return; }
+  }
+  for(let step=1; step<=PAGES.length; step++){
+    const j = IDX + dir*step;
+    if(j<0 || j>=PAGES.length) break;
+    const s = SUMMARY.find(x=>x.page===PAGES[j]);
+    if(s && s.flagged){ load(j).then(()=>{
+      const k = FLAT.findIndex(e=>e.flagged);
+      if(k>=0){ SEL=k; focusSel(); }
+      status(`p${PAGES[j]} · ${s.flagged} disputed`);
+    }); return; }
+  }
+  status(dir>0 ? 'no disputed entries ahead' : 'no disputed entries behind');
+}
 
 // Page numbers are the book's, not the list's: pages the pipeline skipped leave
 // gaps, so jumping to 177 must land on 177 and not on the 177th sheet.
@@ -274,8 +401,14 @@ document.addEventListener('keydown', async ev=>{
   if(ev.metaKey && ev.key==='ArrowLeft'){ ev.preventDefault(); return go(-1); }
   if(ev.metaKey && ev.key==='ArrowRight'){ ev.preventDefault(); return go(1); }
   if(ev.altKey && ev.key.toLowerCase()==='u'){ ev.preventDefault(); return markUnreadable(SEL); }
-  if(ev.key==='Escape'){ const i=document.querySelector(`input[data-i="${SEL}"]`);
-    if(i){ i.value=i.dataset.machine; i.classList.remove('changed'); } ev.preventDefault(); return; }
+  if(ev.altKey && ev.key.toLowerCase()==='e'){ ev.preventDefault(); return takeExpected(); }
+  if(ev.altKey && ev.key.toLowerCase()==='n'){ ev.preventDefault(); return nextFlagged(1); }
+  if(ev.altKey && ev.key.toLowerCase()==='p'){ ev.preventDefault(); return nextFlagged(-1); }
+  if(ev.key==='Escape'){
+    document.querySelectorAll(`input[data-i="${SEL}"]`).forEach(i=>{
+      i.value=i.dataset.orig; i.classList.remove('changed','digits'); });
+    ev.preventDefault(); return;
+  }
   if(ev.key==='Enter'){ ev.preventDefault(); await accept(SEL);
     if(SEL<FLAT.length-1){ SEL++; focusSel(); } else { status('spread complete'); go(1); } return; }
   if(ev.key==='ArrowDown' && SEL<FLAT.length-1){ ev.preventDefault(); SEL++; focusSel(); }

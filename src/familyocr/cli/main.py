@@ -60,6 +60,40 @@ def _artifacts_of(conn) -> Path:
     raise RuntimeError("database is not file-backed")
 
 
+def _refuse_to_orphan_edits(conn, document_id: str, pages: list[int], force: bool):
+    """Stop a batch re-segment from stranding regions a person has edited.
+
+    `segment` still writes only crop rows; matching a fresh machine proposal
+    against the regions already on the page is the next piece of work. Until it
+    exists, re-running over an edited page leaves the edit intact but no longer
+    connected to what the pipeline just produced — the failure is silent, and a
+    reviewer would find out by noticing their corrections had stopped moving.
+    """
+    if not pages:
+        return
+    marks = ",".join("?" * len(pages))
+    edited = conn.execute(
+        f"SELECT page_index, COUNT(*) n FROM regions "
+        f"WHERE document_id = ? AND page_index IN ({marks}) "
+        f"AND deleted_at IS NULL AND state <> 'proposed' "
+        f"GROUP BY page_index ORDER BY page_index",
+        (document_id, *pages),
+    ).fetchall()
+    if not edited:
+        return
+
+    listed = ", ".join(f"p{r['page_index']} ({r['n']})" for r in edited[:8])
+    if len(edited) > 8:
+        listed += f", … {len(edited) - 8} more"
+    if not force:
+        raise typer.BadParameter(
+            f"{sum(r['n'] for r in edited)} edited region(s) on {listed}. "
+            f"Re-segmenting would leave them disconnected from the new crops. "
+            f"Pass --force if that is what you want."
+        )
+    console.print(f"[yellow]--force:[/yellow] re-segmenting over edited regions on {listed}")
+
+
 def _start_run(conn, document_id: str, run: ProcessingRun) -> int:
     from familyocr.persistence.locks import StageBusy, stage_lock
 
@@ -764,6 +798,9 @@ def segment(
     variants: str = typer.Option(
         "original", help="Image variants to cut crops from, e.g. original,maxrgb"
     ),
+    force: bool = typer.Option(
+        False, "--force", help="Re-segment even where a person has edited regions"
+    ),
 ) -> None:
     """Cut entry crops from normalized pages and record their provenance."""
     import cv2
@@ -822,6 +859,8 @@ def segment(
         targets = usable[::step][:sample]
     else:
         targets = usable
+
+    _refuse_to_orphan_edits(conn, document_id, [r["page_index"] for r in targets], force)
 
     run = ProcessingRun(
         stage="segment",
@@ -1878,6 +1917,119 @@ def graph(
             f"{indi} individuals in {fams} families → "
             f"{out / (document_id + '.ged')}"
         )
+
+
+region_app = typer.Typer(help="Inspect and edit the regions of a page.")
+app.add_typer(region_app, name="region")
+
+
+@region_app.command("list")
+def region_list(
+    document_id: str,
+    page: int,
+    variant: str = typer.Option("maxrgb", help="crop variant to report"),
+) -> None:
+    """The regions of one page, in reading order, with their current text."""
+    from familyocr.regions import store as region_store
+
+    project = Project.discover()
+    conn = _open_db(project)
+    _activate(project, document_id)
+
+    regions = region_store.for_page(conn, document_id, page)
+    if not regions:
+        raise typer.BadParameter(
+            f"no regions on {document_id} page {page}; run `familyocr segment` first"
+        )
+
+    table = Table(title=f"{document_id} p{page}")
+    for column in ("uid", "band", "order", "state", "box", "text"):
+        table.add_column(column)
+    for region in regions:
+        row = conn.execute(
+            "SELECT transcription FROM ocr_candidates WHERE region_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (region.id,),
+        ).fetchone()
+        x0, y0, x1, y1 = region.bbox
+        table.add_row(
+            region.region_uid[:12],
+            region.band_label or "—",
+            str(region.reading_order),
+            region.state,
+            f"{x0:.0f},{y0:.0f} {x1:.0f},{y1:.0f}",
+            (row["transcription"] if row else None) or "—",
+        )
+    console.print(table)
+
+
+@region_app.command("move")
+def region_move(
+    region_uid: str,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    reocr: bool = typer.Option(False, "--reocr", help="re-read the moved region"),
+    backend: str = typer.Option("paddleocr_vl", help="recognizer to re-read with"),
+    variant: str = typer.Option("maxrgb", help="crop variant to cut"),
+    reviewer: str = typer.Option("local", help="who is making this change"),
+) -> None:
+    """Move or resize one region, and optionally re-read just that region.
+
+    The command exists to make the editing model checkable without a browser:
+    exactly one crop should be cut and exactly one answer stored, with every
+    other region on the page — and every earlier answer about this one —
+    untouched.
+    """
+    from familyocr.ocr.ondemand import recognize_regions
+    from familyocr.regions import store as region_store
+
+    project = Project.discover()
+    conn = _open_db(project)
+
+    region = region_store.get(conn, region_uid)
+    if region is None:
+        # Accept a prefix: the uid is opaque, and nobody should have to type 32
+        # hex characters to move a box.
+        matches = conn.execute(
+            "SELECT region_uid FROM regions WHERE region_uid LIKE ? LIMIT 2",
+            (region_uid + "%",),
+        ).fetchall()
+        if len(matches) != 1:
+            raise typer.BadParameter(
+                f"no single region matches {region_uid!r} ({len(matches)} candidates)"
+            )
+        region_uid = matches[0]["region_uid"]
+        region = region_store.get(conn, region_uid)
+        assert region is not None
+
+    _activate(project, region.document_id)
+    before = list(region.bbox)
+    edit = region_store.set_geometry(conn, region_uid, [x0, y0, x1, y1], actor=reviewer)
+    conn.commit()
+    console.print(
+        f"{region_uid[:12]}  {before} → {edit.region.bbox}  "
+        f"state={edit.region.state}  undo={edit.undo['bbox']}"
+    )
+
+    if not reocr:
+        console.print("[dim]not re-read; pass --reocr to refresh the transcription[/dim]")
+        return
+
+    answers = recognize_regions(
+        conn, project, region.document_id, [region_uid],
+        backend=backend, variant=variant,
+    )
+    conn.commit()
+    for answer in answers:
+        if answer.error:
+            console.print(f"[red]{answer.error}[/red]")
+        else:
+            console.print(
+                f"[green]{answer.transcription or '—'}[/green] "
+                f"({'cached' if answer.reused else 'freshly read'})"
+            )
 
 
 if __name__ == "__main__":

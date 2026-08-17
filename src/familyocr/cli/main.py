@@ -60,40 +60,6 @@ def _artifacts_of(conn) -> Path:
     raise RuntimeError("database is not file-backed")
 
 
-def _refuse_to_orphan_edits(conn, document_id: str, pages: list[int], force: bool):
-    """Stop a batch re-segment from stranding regions a person has edited.
-
-    `segment` still writes only crop rows; matching a fresh machine proposal
-    against the regions already on the page is the next piece of work. Until it
-    exists, re-running over an edited page leaves the edit intact but no longer
-    connected to what the pipeline just produced — the failure is silent, and a
-    reviewer would find out by noticing their corrections had stopped moving.
-    """
-    if not pages:
-        return
-    marks = ",".join("?" * len(pages))
-    edited = conn.execute(
-        f"SELECT page_index, COUNT(*) n FROM regions "
-        f"WHERE document_id = ? AND page_index IN ({marks}) "
-        f"AND deleted_at IS NULL AND state <> 'proposed' "
-        f"GROUP BY page_index ORDER BY page_index",
-        (document_id, *pages),
-    ).fetchall()
-    if not edited:
-        return
-
-    listed = ", ".join(f"p{r['page_index']} ({r['n']})" for r in edited[:8])
-    if len(edited) > 8:
-        listed += f", … {len(edited) - 8} more"
-    if not force:
-        raise typer.BadParameter(
-            f"{sum(r['n'] for r in edited)} edited region(s) on {listed}. "
-            f"Re-segmenting would leave them disconnected from the new crops. "
-            f"Pass --force if that is what you want."
-        )
-    console.print(f"[yellow]--force:[/yellow] re-segmenting over edited regions on {listed}")
-
-
 def _start_run(conn, document_id: str, run: ProcessingRun) -> int:
     from familyocr.persistence.locks import StageBusy, stage_lock
 
@@ -798,15 +764,18 @@ def segment(
     variants: str = typer.Option(
         "original", help="Image variants to cut crops from, e.g. original,maxrgb"
     ),
-    force: bool = typer.Option(
-        False, "--force", help="Re-segment even where a person has edited regions"
-    ),
 ) -> None:
-    """Cut entry crops from normalized pages and record their provenance."""
+    """Cut entry crops from normalized pages and record their provenance.
+
+    Re-running is safe on a page someone has reviewed: the proposals are matched
+    against the regions already there, so an edited box is kept and the
+    detector's disagreement is recorded rather than applied.
+    """
     import cv2
     import yaml
 
     from familyocr.imaging.variants import VARIANTS, build_variant
+    from familyocr.regions.reconcile import Proposal, reconcile_page
     from familyocr.segmentation.entries import (
         CONTEXTS,
         segment_page,
@@ -815,7 +784,8 @@ def segment(
 
     project = Project.discover()
     conn = _open_db(project)
-    _activate(project, document_id)
+    profile = _activate(project, document_id)
+    band_of = profile.band_map()
     doc = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     if doc is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
@@ -860,8 +830,6 @@ def segment(
     else:
         targets = usable
 
-    _refuse_to_orphan_edits(conn, document_id, [r["page_index"] for r in targets], force)
-
     run = ProcessingRun(
         stage="segment",
         params={"contexts": wanted, "pages": pages or f"sample={sample}"},
@@ -884,10 +852,11 @@ def segment(
     entries_total = 0
     pitch_overrides: list[int] = []
 
-    # Drop any prior segmentation of these pages. Regions are geometry; if the
-    # geometry changed, OCR candidates hanging off the old regions describe crops
-    # that no longer exist, and keeping them would quietly mix two segmentations
-    # in one benchmark. The cascade takes the candidates with them.
+    # Drop this document's own prior crop rows for these pages and cut them
+    # again. These describe where the machine put a crop, so they are the
+    # machine's to replace; the regions those crops belong to are reconciled
+    # below rather than deleted, and the recognizer answers now hang off the
+    # regions, so nothing said about the page is lost by re-cutting it.
     page_list = [row["page_index"] for row in targets]
     if page_list:
         marks = ",".join("?" * len(page_list))
@@ -904,6 +873,8 @@ def segment(
             (document_id, *page_list),
         )
         conn.commit()
+
+    reports: list[Any] = []
 
     with console.status(f"segmenting {len(targets)} pages…") as status:
         for n, row in enumerate(targets, 1):
@@ -970,16 +941,44 @@ def segment(
             ).fetchone()
             inverse = json.loads(tf["inverse_json"]) if tf else None
 
+            # The tight width is the column's own extent; the others pad it by a
+            # fraction of the page pitch, so they describe the neighbours as
+            # much as the entry. Everything that identifies a column — the
+            # physical entry, and the region it belongs to — uses the tight one.
+            tightest_by_key: dict[tuple[int, int], Any] = {}
+            for r in regions:
+                key = (r.band_index, r.entry_index)
+                best = tightest_by_key.get(key)
+                if best is None or (r.x1 - r.x0) < (best.x1 - best.x0):
+                    tightest_by_key[key] = r
+
+            reports.append(
+                reconcile_page(
+                    conn, document_id, page_index,
+                    [
+                        Proposal(
+                            band_ordinal=band,
+                            band_label=band_of.get(band),
+                            entry_index=entry,
+                            bbox=tight.bbox,
+                            orig_quad=(
+                                to_original_quad(tight.bbox, inverse) if inverse else None
+                            ),
+                            transform_id=tf["id"] if tf else None,
+                        )
+                        for (band, entry), tight in sorted(tightest_by_key.items())
+                    ],
+                    run_id=run_id,
+                )
+            )
+
             # One physical entry per column; its several crop widths are all
             # source regions pointing back at that same entry.
             entry_rows: dict[tuple[int, int], int] = {}
             for r in regions:
                 key = (r.band_index, r.entry_index)
                 if key not in entry_rows:
-                    tightest = min(
-                        (x for x in regions if (x.band_index, x.entry_index) == key),
-                        key=lambda x: x.x1 - x.x0,
-                    )
+                    tightest = tightest_by_key[key]
                     cur = conn.execute(
                         "INSERT INTO physical_entries "
                         "(band_id, entry_index, bbox_json) VALUES (?,?,?)",
@@ -1015,8 +1014,8 @@ def segment(
                     """INSERT INTO source_regions
                        (entry_id, document_id, page_index, role, context,
                         bbox_json, normalized_bbox_json, transform_id,
-                        crop_id, crop_path)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        crop_id, crop_path, region_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         entry_rows[key], document_id, page_index, "entry",
                         r.context,
@@ -1026,10 +1025,12 @@ def segment(
                         json.dumps(r.bbox),
                         tf["id"] if tf else None,
                         crop_id, str(out),
+                        reports[-1].links.get(key),
                     ),
                 )
             status.update(f"segmenting {n}/{len(targets)}")
 
+    relinked = _repoint_breadcrumbs(conn, document_id, page_list)
     conn.commit()
     _finish_run(conn, run_id)
     console.print(
@@ -1051,6 +1052,114 @@ def segment(
             f"[cyan]{len(pitch_overrides)}[/cyan] page(s) used the corpus pitch "
             f"({corpus_pitch:.0f} px) instead of their own estimate: "
             f"{pitch_overrides[:12]}"
+        )
+    _report_reconcile(reports)
+    if relinked:
+        console.print(
+            f"[dim]{relinked} existing transcription(s) re-aimed at the new crop "
+            f"rows; none was discarded[/dim]"
+        )
+
+
+def _repoint_breadcrumbs(conn, document_id: str, pages: list[int]) -> int:
+    """Re-aim `ocr_candidates.source_region_id` at the crop rows just written.
+
+    The authoritative link is `region_id`, and it is untouched by a rerun. But
+    the benchmark, the review app and `verify-layout` still read an answer
+    through the crop row it was cut from, and those rows are replaced whenever a
+    page is segmented again. Left stale, the answers stay in the database and
+    disappear from every report — which is worse than losing them, because
+    nothing says so.
+
+    Matching is on (region, crop width): the width is what distinguishes the
+    several crop rows of one column, and it is recorded against the answer by
+    the crop it read.
+    """
+    if not pages:
+        return 0
+    marks = ",".join("?" * len(pages))
+    rows = conn.execute(
+        f"SELECT id, region_id, context FROM source_regions "
+        f"WHERE document_id = ? AND page_index IN ({marks}) AND region_id IS NOT NULL",
+        (document_id, *pages),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    by_region_width = {(r["region_id"], r["context"]): r["id"] for r in rows}
+    by_region: dict[int, int] = {}
+    for r in rows:
+        by_region.setdefault(r["region_id"], r["id"])
+
+    updates = [
+        (target, c["id"])
+        for c in conn.execute(
+            f"SELECT c.id, c.region_id, rc.context AS context FROM ocr_candidates c "
+            f"LEFT JOIN region_crops rc ON rc.crop_key = c.crop_key "
+            f"WHERE c.region_id IN (SELECT region_id FROM source_regions "
+            f"  WHERE document_id = ? AND page_index IN ({marks}) "
+            f"    AND region_id IS NOT NULL)",
+            (document_id, *pages),
+        )
+        if (
+            target := by_region_width.get((c["region_id"], c["context"]))
+            or by_region.get(c["region_id"])
+        )
+    ]
+    conn.executemany(
+        "UPDATE ocr_candidates SET source_region_id = ? WHERE id = ?", updates
+    )
+    return len(updates)
+
+
+def _report_reconcile(reports: list[Any]) -> None:
+    """Say what the rerun did to the regions, not just how many crops it wrote.
+
+    A segmentation that changed nothing and one that moved every column produce
+    the same crop count, and the difference is the whole question when a page
+    has already been reviewed.
+    """
+    if not reports:
+        return
+    totals = {
+        k: sum(getattr(r, k) for r in reports)
+        for k in ("unchanged", "moved", "created", "revived", "retired")
+    }
+    divergent = [(r.page_index, len(r.divergent)) for r in reports if r.divergent]
+    orphaned = [(r.page_index, len(r.orphaned)) for r in reports if r.orphaned]
+    locked = sorted({label for r in reports for label in r.order_locked})
+
+    if not any(v for k, v in totals.items() if k != "unchanged"):
+        console.print(
+            f"[green]regions unchanged[/green]: all {totals['unchanged']} matched "
+            f"what was already there"
+        )
+    else:
+        console.print(
+            "regions: "
+            f"[green]{totals['unchanged']}[/green] unchanged, "
+            f"[cyan]{totals['moved']}[/cyan] moved, "
+            f"[cyan]{totals['created']}[/cyan] new, "
+            f"[cyan]{totals['revived']}[/cyan] restored, "
+            f"[yellow]{totals['retired']}[/yellow] withdrawn"
+        )
+    if divergent:
+        n = sum(c for _, c in divergent)
+        console.print(
+            f"[yellow]{n}[/yellow] edited region(s) the detector now disagrees with, "
+            f"kept as they are on page(s) {[p for p, _ in divergent][:12]} "
+            f"— see region_proposals"
+        )
+    if orphaned:
+        n = sum(c for _, c in orphaned)
+        console.print(
+            f"[yellow]{n}[/yellow] edited region(s) nothing proposed, kept on "
+            f"page(s) {[p for p, _ in orphaned][:12]}"
+        )
+    if locked:
+        console.print(
+            f"[cyan]reading order left alone[/cyan] in band(s) {locked} — "
+            f"a reviewer has set it"
         )
 
 
@@ -1783,21 +1892,23 @@ def graph(
                     (document_id,)).fetchone() is None:
         raise typer.BadParameter(f"unknown document {document_id!r}")
 
-    q = """SELECT sr.id AS source_region_id, sr.page_index AS page_index,
-                  b.band_index AS band_index, pe.entry_index AS entry_index,
+    # Read the entries from the regions rather than from the crop rows they were
+    # cut from. A crop row is replaced whenever the page is segmented again, so
+    # reading through it meant a rerun emptied the graph for those pages while
+    # every transcription was still on record.
+    q = """SELECT r.region_uid AS region_uid, r.page_index AS page_index,
+                  r.band_ordinal AS band_index, r.reading_order AS entry_index,
                   oc.transcription AS ocr_text
-           FROM source_regions sr
-           JOIN physical_entries pe ON pe.id = sr.entry_id
-           JOIN bands b ON b.id = pe.band_id
-           LEFT JOIN ocr_candidates oc ON oc.source_region_id = sr.id
+           FROM regions r
+           LEFT JOIN ocr_candidates oc ON oc.region_id = r.id
            LEFT JOIN ocr_runs orun ON orun.id = oc.ocr_run_id
-           WHERE sr.document_id = ? AND sr.context = 'tight'
-             AND sr.role = 'entry'"""
+           WHERE r.document_id = ? AND r.deleted_at IS NULL
+             AND r.role = 'entry'"""
     params: list[Any] = [document_id]
     if tag:
         q += " AND orun.tag = ?"
         params.append(tag)
-    q += " ORDER BY sr.page_index, b.band_index, pe.entry_index, oc.id"
+    q += " ORDER BY r.page_index, r.band_ordinal, r.reading_order, oc.id"
 
     # Corrections are keyed by band *label*, entries by band *index*, so they
     # are matched here rather than in SQL. Joining on (page, entry) alone — as
@@ -1825,7 +1936,7 @@ def graph(
         if text is None and key in best:
             continue
         best[key] = {
-            "source_region_id": r["source_region_id"],
+            "region_uid": r["region_uid"],
             "page_index": r["page_index"], "band_index": r["band_index"],
             "entry_index": r["entry_index"], "text": text, "source": source,
         }

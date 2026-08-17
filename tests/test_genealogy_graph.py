@@ -27,7 +27,7 @@ def _profile():
 def _rows(*specs):
     """specs: (page, band_index, entry_index, text)"""
     return [
-        {"source_region_id": i, "page_index": p, "band_index": b,
+        {"region_uid": f"uid{i}", "page_index": p, "band_index": b,
          "entry_index": e, "text": t, "source": "ocr"}
         for i, (p, b, e, t) in enumerate(specs)
     ]

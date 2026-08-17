@@ -245,23 +245,6 @@ def test_a_region_holding_answers_cannot_be_deleted(legacy):
         legacy.execute("DELETE FROM regions WHERE document_id=?", (DOC,))
 
 
-def test_segment_refuses_to_strand_an_edited_region(legacy):
-    """Until a re-segment can match its proposals against existing regions, it
-    must not run over a page someone has edited and leave the edit behind."""
-    from familyocr.cli.main import _refuse_to_orphan_edits
-
-    # A page nobody has touched segments as it always did.
-    _refuse_to_orphan_edits(legacy, DOC, [58], force=False)
-
-    legacy.execute("UPDATE regions SET state='verified' WHERE reading_order=0")
-    with pytest.raises(Exception) as excinfo:
-        _refuse_to_orphan_edits(legacy, DOC, [58], force=False)
-    assert "p58" in str(excinfo.value)
-
-    # …and says so plainly rather than refusing outright when told to proceed.
-    _refuse_to_orphan_edits(legacy, DOC, [58], force=True)
-
-
 def test_migrating_twice_changes_nothing(legacy):
     counts = lambda: tuple(
         legacy.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]

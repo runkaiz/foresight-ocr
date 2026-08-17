@@ -25,13 +25,21 @@ from __future__ import annotations
 import sqlite3
 from typing import Callable
 
-from . import m001_derived_tables, m002_regions, m003_ocr_cache
+from . import (
+    m001_derived_tables,
+    m002_regions,
+    m003_ocr_cache,
+    m004_proposal_without_a_run,
+    m005_parsed_entries_by_region,
+)
 
 #: (version, apply) in order. A step is applied when `user_version` is below it.
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, m001_derived_tables.apply),
     (2, m002_regions.apply),
     (3, m003_ocr_cache.apply),
+    (4, m004_proposal_without_a_run.apply),
+    (5, m005_parsed_entries_by_region.apply),
 ]
 
 HEAD = MIGRATIONS[-1][0]

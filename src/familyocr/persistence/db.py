@@ -187,9 +187,12 @@ CREATE TABLE IF NOT EXISTS region_crops (
 -- reviewer's geometry contradicts, or a region no proposal covers. Storing the
 -- disagreement rather than a shadow copy of every region is what keeps
 -- "machine proposal vs working version" from doubling the table.
+-- `run_id` is nullable: a disagreement between a person's box and the
+-- detector's is a fact about the page, and reconciling can be asked for by the
+-- editor as readily as by a batch stage.
 CREATE TABLE IF NOT EXISTS region_proposals (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id        INTEGER NOT NULL REFERENCES processing_runs(id),
+    run_id        INTEGER REFERENCES processing_runs(id),
     document_id   TEXT NOT NULL,
     page_index    INTEGER NOT NULL,
     band_label    TEXT,
@@ -315,7 +318,11 @@ CREATE TABLE IF NOT EXISTS validation_findings (
 CREATE TABLE IF NOT EXISTS parsed_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id     TEXT NOT NULL,
-    source_region_id INTEGER NOT NULL REFERENCES source_regions(id) ON DELETE CASCADE,
+    -- Keyed to the region, not to the crop row it was cut from. A crop row is
+    -- replaced whenever the page is segmented again, so keying there meant a
+    -- rerun silently emptied the genealogy for those pages even though every
+    -- transcription was still on record.
+    region_uid      TEXT NOT NULL REFERENCES regions(region_uid),
     page_index      INTEGER NOT NULL,
     band_label      TEXT NOT NULL,
     entry_index     INTEGER NOT NULL,
@@ -333,7 +340,7 @@ CREATE TABLE IF NOT EXISTS parsed_entries (
     order_rank      INTEGER,
     leftover        TEXT,
     flags_json      TEXT,              -- label_from_geometry, numeral repairs, …
-    UNIQUE (document_id, source_region_id)
+    UNIQUE (document_id, region_uid)
 );
 
 -- One row per person the chart names. `father_person_id` is the reconstructed

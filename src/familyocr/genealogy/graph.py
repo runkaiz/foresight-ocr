@@ -57,7 +57,7 @@ class EntryRow:
     address. They usually agree; where a misreading makes them differ, identity
     decides who he is and address decides where the reviewer must look.
     """
-    source_region_id: int
+    region_uid: str
     page_index: int
     band_label: str
     geometric_label: str
@@ -166,7 +166,7 @@ def build_entries(rows: Iterable[dict[str, Any]], band_of: dict[int, str],
         text = r["text"] or ""
         label, parsed = resolve_entry(text, geometric, charted, parent_of)
         out.append(EntryRow(
-            source_region_id=r["source_region_id"],
+            region_uid=r["region_uid"],
             page_index=r["page_index"],
             band_label=label,
             geometric_label=geometric,
@@ -326,7 +326,7 @@ def store_graph(conn, document_id: str, entries: list[EntryRow],
     conn.execute("DELETE FROM persons WHERE document_id = ?", (document_id,))
     conn.execute("DELETE FROM parsed_entries WHERE document_id = ?", (document_id,))
 
-    entry_ids: dict[int, int] = {}
+    entry_ids: dict[str, int] = {}
     for e in entries:
         p = e.parsed
         flags = {
@@ -337,18 +337,18 @@ def store_graph(conn, document_id: str, entries: list[EntryRow],
         }
         cur = conn.execute(
             """INSERT INTO parsed_entries
-               (document_id, source_region_id, page_index, band_label,
+               (document_id, region_uid, page_index, band_label,
                 entry_index, source, text, own_id, own_value, parent_id,
                 parent_value, parent_name, birth_order, order_rank, leftover,
                 flags_json)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (document_id, e.source_region_id, e.page_index, e.band_label,
+            (document_id, e.region_uid, e.page_index, e.band_label,
              e.entry_index, e.source, e.text, p.own_id, e.own_value,
              p.parent_id, e.parent_value, p.parent_name, p.order,
              p.order_rank, p.leftover,
              json.dumps(flags, ensure_ascii=False)),
         )
-        entry_ids[e.source_region_id] = int(cur.lastrowid)
+        entry_ids[e.region_uid] = int(cur.lastrowid)
 
     charted = charted if charted is not None else set()
     result = build_graph(entries, parent_of, charted)
@@ -385,7 +385,7 @@ def store_graph(conn, document_id: str, entries: list[EntryRow],
                 order_rank, link_status)
                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (document_id, key, e.band_label, e.parsed.own_id, e.own_value,
-             entry_ids.get(e.source_region_id),
+             entry_ids.get(e.region_uid),
              fkey, e.parsed.parent_name, e.parsed.order, e.parsed.order_rank,
              "pending"),
         )

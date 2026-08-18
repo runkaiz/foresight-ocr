@@ -81,6 +81,19 @@
                    border-radius:6px; padding:4px 8px; cursor:pointer; font-size:13px; }
   button:hover { border-color:var(--accent); }
   #flagcount { color:var(--bad); }
+  /* The lattice bar. Layout errors are not typing errors: when the comb locks
+     onto the wrong phase every column on the page is cut through its own text,
+     and the repair is one number rather than a box-by-box drag. */
+  #layoutbar { display:none; gap:12px; align-items:center; padding:5px 14px;
+               background:#171b21; border-bottom:1px solid var(--line); font-size:12px; }
+  #layoutbar.on { display:flex; }
+  #layoutbar label { display:flex; gap:5px; align-items:center; color:var(--muted); }
+  #layoutbar input[type=number] { width:6em; padding:2px 5px; font-size:12px;
+      background:#0f1115; color:var(--text); border:1px solid var(--line); border-radius:5px; }
+  body.laying main { height:calc(100vh - 80px); }
+  line.comb { stroke:#ff5c8a; stroke-width:5; }
+  line.comb.snapped { stroke:#4ec9a0; }
+  #lstat b { color:var(--text); }
 </style>
 </head>
 <body>
@@ -111,6 +124,22 @@
   <button onclick="exportAll()">export</button>
 </header>
 
+<div id="layoutbar">
+  <b>lattice p<span id="lpage">—</span></b>
+  <label>phase
+    <input id="lphase" type="range" min="-190" max="190" value="0" step="1" oninput="onComb()">
+    <span id="lphaseval" style="width:3.2em;display:inline-block">0</span>px
+  </label>
+  <label>pitch <input id="lpitch" type="number" step="0.5" oninput="onComb()"></label>
+  <label>left <input id="lleft" type="number" step="1" oninput="onComb()"></label>
+  <label>right <input id="lright" type="number" step="1" oninput="onComb()"></label>
+  <label><input id="lsnap" type="checkbox" checked onchange="onComb()"> snap to gutters</label>
+  <span id="lstat" class="muted"></span>
+  <label><input id="lreocr" type="checkbox" checked> re-read</label>
+  <button onclick="applyComb()">re-cut page</button>
+  <button onclick="toggleLayout()">done</button>
+</div>
+
 <main>
   <div id="sheets"></div>
   <div id="croppane"><span class="none">select an entry</span></div>
@@ -126,11 +155,13 @@
   <span><kbd>⌘←→</kbd> page</span>
   <span><kbd>⌥U</kbd> unreadable</span>
   <span><kbd>Esc</kbd> revert</span>
+  <span><kbd>⌥L</kbd> lattice</span>
   <span id="status"></span>
 </footer>
 
 <script>
 let PAGES=[], SUMMARY=[], IDX=0, SHEETS=[], FLAT=[], SEL=0, TAG=null;
+let COMB=null;      // the lattice preview, while the bar is open
 const FIELDS = ['own_id','parent','birth_order'];
 const $ = s => document.querySelector(s);
 const status = m => { $('#status').textContent = m;
@@ -272,6 +303,7 @@ function render(){
     inp.addEventListener('blur', ()=> normalize(inp));
   });
   setZoom();
+  drawComb();
   focusSel();
 }
 
@@ -365,6 +397,120 @@ async function exportAll(){
 }
 function go(d){ load(IDX + d*Math.max(1, +$('#spread').value)); }
 
+// --------------------------------------------------------------------------
+// The lattice.
+//
+// Some pages come back with every entry wrong, and not because the recognizer
+// misread them: the comb that cuts the columns landed half a column off, so
+// each crop holds the left of one entry and the right of the next. That is one
+// mistake, made once, for the whole page — so it gets one control, not a drag
+// per box. The preview is free; only `re-cut page` spends anything.
+
+function toggleLayout(){
+  const bar = $('#layoutbar');
+  const on = !bar.classList.contains('on');
+  bar.classList.toggle('on', on);
+  document.body.classList.toggle('laying', on);
+  if(on){ resetComb(); } else { COMB=null; drawComb(); }
+}
+
+async function resetComb(){
+  if(!SHEETS[0]) return;
+  $('#lpage').textContent = SHEETS[0].page;
+  $('#lphase').value = 0; $('#lphaseval').textContent = '0';
+  ['#lpitch','#lleft','#lright'].forEach(id=>$(id).value='');
+  $('#lsnap').checked = true;
+  // Straight to the fetch rather than through the debounce: the readouts below
+  // are set from the answer, and a debounced call returns before it arrives.
+  await fetchComb();
+  // The slider spans one pitch: beyond half a pitch in either direction the
+  // lattice is simply the next column along, which the boundaries already say.
+  if(COMB){
+    const half = Math.round(COMB.fitted_pitch/2);
+    $('#lphase').min = -half; $('#lphase').max = half;
+    $('#lpitch').placeholder = COMB.fitted_pitch.toFixed(1);
+    $('#lleft').placeholder = Math.round(COMB.fitted_text_left);
+    $('#lright').placeholder = Math.round(COMB.fitted_text_right);
+  }
+}
+
+let _combTimer = null;
+function onComb(){
+  $('#lphaseval').textContent = $('#lphase').value;
+  clearTimeout(_combTimer);
+  _combTimer = setTimeout(fetchComb, 90);
+}
+
+async function fetchComb(){
+  if(!SHEETS[0]) return;
+  $('#lphaseval').textContent = $('#lphase').value;
+  const q = new URLSearchParams({
+    page: SHEETS[0].page,
+    phase: $('#lphase').value,
+    pitch: $('#lpitch').value,
+    left:  $('#lleft').value,
+    right: $('#lright').value,
+    snap:  $('#lsnap').checked ? '1' : '0',
+  });
+  const r = await (await fetch('/api/comb?'+q)).json();
+  if(r.error){ $('#lstat').textContent = r.error; COMB=null; drawComb(); return; }
+  COMB = r;
+  const edges = [...r.boundaries].sort((a,b)=>a-b);
+  const gaps = edges.slice(1).map((x,i)=>Math.round(x-edges[i]));
+  // Even spacing is the tell that the phase is right; one short gap among even
+  // ones is a boundary that snapped to a gutter belonging to something else.
+  $('#lstat').innerHTML =
+    `<b>${r.entries_per_band}</b> per band (${r.entries} columns) · `
+    + `spacing ${gaps.length?Math.min(...gaps)+'–'+Math.max(...gaps):'—'} px · `
+    + `${r.snapped.filter(Boolean).length}/${r.boundaries.length} on a gutter of `
+    + `${r.gutters.length} · confidence ${r.pitch_confidence.toFixed(2)}`;
+  drawComb();
+}
+
+function drawComb(){
+  const sheet = $('#sheets .sheet');
+  if(!sheet) return;
+  const svg = sheet.querySelector('svg');
+  if(!svg) return;
+  svg.querySelectorAll('line.comb').forEach(l=>l.remove());
+  if(!COMB || !SHEETS[0]) return;
+  const h = SHEETS[0].height;
+  COMB.boundaries.forEach((x,i)=>{
+    const l = document.createElementNS('http://www.w3.org/2000/svg','line');
+    l.setAttribute('class', 'comb'+(COMB.snapped[i]?' snapped':''));
+    l.setAttribute('x1', x); l.setAttribute('x2', x);
+    l.setAttribute('y1', 0); l.setAttribute('y2', h);
+    svg.appendChild(l);
+  });
+}
+
+async function applyComb(){
+  if(!COMB || !SHEETS[0]) return;
+  const reocr = $('#lreocr').checked;
+  status(reocr ? 're-cutting and re-reading…' : 're-cutting…');
+  const r = await (await fetch('/api/recut', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      page: SHEETS[0].page,
+      phase_offset: +$('#lphase').value,
+      pitch: $('#lpitch').value || null,
+      text_left: $('#lleft').value || null,
+      text_right: $('#lright').value || null,
+      snap: $('#lsnap').checked,
+      reocr,
+    })})).json();
+  if(r.error){ status(r.error); return; }
+  if(r.progress) setProgress(r.progress);
+  const d = r.report;
+  status(`${d.entries_per_band} per band — ${d.moved} moved, ${d.created} new, `
+       + `${d.retired} withdrawn, ${d.read} re-read`);
+  // The page's findings described entry positions that have just changed, so
+  // they are gone until `validate` runs again; say so rather than showing a
+  // clean page that has not been checked.
+  await load(IDX);
+  await resetComb();
+}
+
 // Flagged entries are where the sequence checksum disagrees with the reading.
 // Walking to the next one is the difference between reviewing a page and
 // hunting through it; past the end of the spread it carries on to the next page
@@ -404,6 +550,7 @@ document.addEventListener('keydown', async ev=>{
   if(ev.altKey && ev.key.toLowerCase()==='e'){ ev.preventDefault(); return takeExpected(); }
   if(ev.altKey && ev.key.toLowerCase()==='n'){ ev.preventDefault(); return nextFlagged(1); }
   if(ev.altKey && ev.key.toLowerCase()==='p'){ ev.preventDefault(); return nextFlagged(-1); }
+  if(ev.altKey && ev.key.toLowerCase()==='l'){ ev.preventDefault(); return toggleLayout(); }
   if(ev.key==='Escape'){
     document.querySelectorAll(`input[data-i="${SEL}"]`).forEach(i=>{
       i.value=i.dataset.orig; i.classList.remove('changed','digits'); });

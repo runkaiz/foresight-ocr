@@ -100,12 +100,28 @@ def entry_boundaries(
     pitch: float,
     gutters: list[float],
     snap_tol_frac: float = 0.12,
+    *,
+    phase_offset: float = 0.0,
+    snap: bool = True,
 ) -> tuple[list[float], list[bool]]:
-    """Right-to-left lattice of entry boundaries on a fitted comb."""
+    """Right-to-left lattice of entry boundaries on a fitted comb.
+
+    `phase_offset` shifts every boundary together, in pixels. The fit is a vote
+    among detected gutters, and on a page where too few were detected the
+    majority can be wrong — every column then gets cut through its own id
+    instead of between two. One number moves the whole lattice, which is the
+    repair that matches the damage; dragging each box separately would be seven
+    edits for one mistake.
+
+    `snap=False` keeps the lattice perfectly regular. Snapping buys local
+    accuracy from the gutters and is right when they are trustworthy; when they
+    are the reason the page is wrong, it is the thing to switch off.
+    """
     if pitch <= 0:
         return [], []
     tol = pitch * snap_tol_frac
     phase, _ = fit_comb(text_left, text_right, pitch, gutters, snap_tol_frac)
+    phase += phase_offset
 
     # The fitted phase can land short of the right-hand text edge, so extend the
     # comb rightwards first. Walking only leftwards from the phase silently drops
@@ -132,10 +148,44 @@ def entry_boundaries(
     # gutter for local accuracy, but the nudge never moves the comb itself, so
     # one bad gutter can no longer drag the rest of the page with it.
     for pos in positions:
-        snapped_x, ok = _snap(pos, gutters, tol)
+        snapped_x, ok = _snap(pos, gutters, tol) if snap else (pos, False)
         bounds.append(snapped_x)
         snapped.append(ok)
     return bounds, snapped
+
+
+def resolve_comb(
+    geometry: dict[str, Any],
+    corpus_pitch: float,
+    corpus_text_left: float,
+    corpus_text_right: float,
+) -> tuple[float, float, float, bool]:
+    """Which pitch and text extent a page's lattice is built on.
+
+    Shared by the batch pass and the editor so a re-cut with no adjustment
+    reproduces the boxes already on record. Two priors are applied:
+
+    * Autocorrelation can lock onto half the true period on a noisy page, which
+      would cut every entry in two, so a weak or wildly different per-page
+      estimate defers to the corpus.
+    * The lattice domain comes from the template rather than this page's ink
+      extent. Pages are normalized to a common frame, so the grid is a property
+      of the frame; a faint rightmost column pulls the measured edge inward by
+      less than one pitch and the band loses its last entry entirely.
+    """
+    page_pitch = float(geometry["column_pitch"])
+    used_corpus = (
+        float(geometry.get("pitch_confidence", 0.0)) < 0.3
+        or abs(page_pitch - corpus_pitch) > 0.1 * corpus_pitch
+    )
+    if used_corpus:
+        page_pitch = corpus_pitch
+    return (
+        page_pitch,
+        min(float(geometry["text_left"]), corpus_text_left),
+        max(float(geometry["text_right"]), corpus_text_right),
+        used_corpus,
+    )
 
 
 def segment_page(
@@ -147,10 +197,16 @@ def segment_page(
     text_right: float,
     page_width: int,
     contexts: dict[str, float] | None = None,
+    *,
+    phase_offset: float = 0.0,
+    snap: bool = True,
 ) -> list[EntryRegion]:
     """Produce entry regions for every band on one normalized page."""
     contexts = contexts or CONTEXTS
-    bounds, snapped = entry_boundaries(text_left, text_right, pitch, column_edges)
+    bounds, snapped = entry_boundaries(
+        text_left, text_right, pitch, column_edges,
+        phase_offset=phase_offset, snap=snap,
+    )
     if len(bounds) < 2:
         return []
 

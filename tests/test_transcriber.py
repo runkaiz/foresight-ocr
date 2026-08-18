@@ -14,6 +14,7 @@ from familyocr.context import set_profile
 from familyocr.document.profile import DocumentProfile
 from familyocr.ocr.fields import compose_entry, own_id_from_digits, parse_entry
 from familyocr.persistence.db import init_schema
+from familyocr.regions import store
 from familyocr.review.data import (
     export_document,
     page_entries,
@@ -116,19 +117,20 @@ def _db():
         "VALUES (1,NULL,'m','maxrgb','t')"
     )
     for entry, text in enumerate(["庶三百三十五允二百八十六次子", "庶\n允四\n六\n次子"]):
-        pe = conn.execute(
-            "INSERT INTO physical_entries (band_id, entry_index, bbox_json) "
-            "VALUES (?,?,'[]')", (band, entry)
-        ).lastrowid
-        sr = conn.execute(
-            "INSERT INTO source_regions (entry_id, document_id, page_index, role, "
-            "context, bbox_json, crop_id, crop_path) "
-            "VALUES (?,'doc',58,'entry','tight','[]',?,?)",
-            (pe, f"c{entry}", f"/crops/c{entry}.png"),
-        ).lastrowid
+        bbox = [1000.0 - 300 * entry, 0.0, 1300.0 - 300 * entry, 900.0]
+        region = store.create_region(
+            conn, "doc", 58, bbox,
+            band_label="庶", band_ordinal=0, reading_order=entry, entry_index=entry,
+        )
         conn.execute(
-            "INSERT INTO ocr_candidates (region_id, source_region_id, ocr_run_id, "
-            "transcription) VALUES (NULL,?,1,?)", (sr, text)
+            "INSERT INTO region_crops (region_id, geometry_hash, context, pad_frac, "
+            "variant, pixel_bbox_json, crop_key, path, created_at) "
+            "VALUES (?,?, 'tight', 0.0, 'maxrgb', '[]', ?, ?, 'now')",
+            (region.id, region.geometry_hash, f"c{entry}", f"/crops/c{entry}.png"),
+        )
+        conn.execute(
+            "INSERT INTO ocr_candidates (region_id, ocr_run_id, crop_key, "
+            "transcription) VALUES (?,1,?,?)", (region.id, f"c{entry}", text)
         )
     conn.commit()
     return conn

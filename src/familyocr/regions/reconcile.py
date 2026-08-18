@@ -73,6 +73,7 @@ class ReconcileReport:
     created: int = 0
     revived: int = 0
     retired: int = 0
+    refused: int = 0     # proposals answered by a column a person rejected
     divergent: list[str] = field(default_factory=list)   # region_uids
     orphaned: list[str] = field(default_factory=list)    # region_uids
     order_locked: list[str] = field(default_factory=list)  # band labels
@@ -91,7 +92,8 @@ class ReconcileReport:
         return (
             f"p{self.page_index}: {self.unchanged} unchanged, {self.moved} moved, "
             f"{self.created} new, {self.revived} restored, {self.retired} withdrawn, "
-            f"{len(self.divergent)} divergent, {len(self.orphaned)} orphaned"
+            f"{self.refused} refused, {len(self.divergent)} divergent, "
+            f"{len(self.orphaned)} orphaned"
         )
 
 
@@ -109,7 +111,7 @@ def interval_iou(a: Sequence[float], b: Sequence[float]) -> float:
     return overlap / union if union > 0 else 0.0
 
 
-def _pair_up(
+def pair_up(
     proposals: list[Proposal],
     regions: list[Region],
     document_id: str,
@@ -182,11 +184,13 @@ def reconcile_page(
 
     # Tombstones take part in matching: a column that reappears should come back
     # as itself, with its answers, rather than as a stranger with the same box.
-    existing = [
-        r
-        for r in store.for_page(conn, document_id, page_index, include_deleted=True)
-        if r.state != RegionState.REJECTED
-    ]
+    #
+    # Rejected regions take part too, and this is not the same thing. They are
+    # never revived — a person said the column is not there — but they still have
+    # to absorb the proposal that names their box, or the detector would insert a
+    # fresh region beside the rejection on every run and the reviewer would be
+    # deleting the same column for the rest of the volume.
+    existing = store.for_page(conn, document_id, page_index, include_deleted=True)
 
     bands = {p.band_ordinal for p in proposals} | {
         r.band_ordinal for r in existing if r.band_ordinal is not None
@@ -209,11 +213,16 @@ def reconcile_page(
 def _reconcile_band(
     conn, document_id, page_index, proposals, regions, report, run_id, dry_run
 ) -> None:
-    matched, unmatched_proposals, unmatched_regions = _pair_up(
+    matched, unmatched_proposals, unmatched_regions = pair_up(
         proposals, regions, document_id, page_index
     )
 
     for proposal, region, score in matched:
+        if region.state == RegionState.REJECTED:
+            # The proposal is answered, not applied: the box is accounted for, so
+            # nothing new is inserted, and nothing comes back.
+            report.refused += 1
+            continue
         if region.id is not None:
             report.links[(proposal.band_ordinal, proposal.entry_index)] = region.id
         if region.pinned:
@@ -267,7 +276,7 @@ def _reconcile_band(
                 report.links[(proposal.band_ordinal, proposal.entry_index)] = created.id
 
     for region in unmatched_regions:
-        if region.deleted_at is not None:
+        if region.deleted_at is not None or region.state == RegionState.REJECTED:
             continue                      # already withdrawn; leave it that way
         if region.pinned:
             # Nothing proposed it, but a person said it is there. They are the

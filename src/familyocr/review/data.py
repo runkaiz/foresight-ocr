@@ -10,6 +10,17 @@ browser. The UI pre-fills the editable box with the machine text so the reviewer
 edits rather than retypes, but the machine transcription is never overwritten —
 a correction is a new row in `human_corrections`, keyed on the stable
 (document, page, band, entry, role) tuple so it survives reprocessing.
+
+The page is read from `regions`, not from the crop rows a segmentation pass
+happened to write. Those describe where a crop was cut; the region is the thing
+a person edits, and once the editor can move it the two stop agreeing. Reading
+through the crop row is how a re-cut page would keep showing the boxes and the
+text it had before the re-cut — present, wrong, and silent about it.
+
+Which reading belongs to a region is decided by pixels: the answer preferred is
+the one produced from a crop whose geometry is the region's *current* geometry.
+Anything else is a reading of pixels that no longer exist, kept as a fallback so
+a page whose crops predate the region table still shows what is known about it.
 """
 
 from __future__ import annotations
@@ -74,17 +85,29 @@ class ReviewEntry:
     # a break in the run, which is exactly when the reviewer needs it.
     expected_own_id: str | None = None
     flagged: bool = False
+    # The region this row is, so the browser can address it for a geometry edit
+    # without going back through its position on the page.
+    region_uid: str | None = None
+    state: str = "proposed"
+    stale_reading: bool = False   # the text was read from pixels since re-cut
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 def latest_ocr_tag(conn, document_id: str) -> str | None:
+    """Which benchmark configuration pre-fills the page.
+
+    Interactive re-reads are excluded. They are the newest answers in the
+    database the moment anyone edits a region, and taking one as the document's
+    configuration would pin the whole book to a tag that exists on a handful of
+    columns — every other page would then show nothing at all.
+    """
     row = conn.execute(
         """SELECT r.tag FROM ocr_candidates oc
            JOIN ocr_runs r ON r.id = oc.ocr_run_id
-           JOIN source_regions sr ON sr.id = oc.source_region_id
-           WHERE sr.document_id = ?
+           JOIN regions g ON g.id = oc.region_id
+           WHERE g.document_id = ? AND r.tag IS NOT 'interactive'
            ORDER BY oc.id DESC LIMIT 1""",
         (document_id,),
     ).fetchone()
@@ -95,8 +118,8 @@ def reviewable_pages(conn, document_id: str) -> list[int]:
     return [
         r["page_index"]
         for r in conn.execute(
-            "SELECT DISTINCT page_index FROM source_regions "
-            "WHERE document_id = ? ORDER BY page_index",
+            "SELECT DISTINCT page_index FROM regions "
+            "WHERE document_id = ? AND deleted_at IS NULL ORDER BY page_index",
             (document_id,),
         )
     ]
@@ -112,8 +135,9 @@ def page_summary(conn, document_id: str) -> list[dict[str, Any]]:
     """
     entries = Counter()
     for r in conn.execute(
-        "SELECT page_index, COUNT(*) n FROM source_regions "
-        "WHERE document_id = ? AND context = 'tight' GROUP BY page_index",
+        "SELECT page_index, COUNT(*) n FROM regions "
+        "WHERE document_id = ? AND deleted_at IS NULL AND state != 'rejected' "
+        "GROUP BY page_index",
         (document_id,),
     ):
         entries[r["page_index"]] = r["n"]
@@ -152,33 +176,17 @@ def page_entries(
 ) -> list[ReviewEntry]:
     """Everything the reviewer needs for one page, in reading order."""
     rows = conn.execute(
-        """SELECT b.band_index AS band_index, pe.entry_index AS entry_index,
-                  sr.crop_path AS crop_path, sr.crop_id AS crop_id,
-                  sr.normalized_bbox_json AS bbox, sr.role AS role
-           FROM source_regions sr
-           JOIN physical_entries pe ON pe.id = sr.entry_id
-           JOIN bands b ON b.id = pe.band_id
-           WHERE sr.document_id = ? AND sr.page_index = ? AND sr.context = 'tight'
-           ORDER BY b.band_index, pe.entry_index""",
+        """SELECT id, region_uid, band_ordinal, reading_order, role, state,
+                  bbox_json, geometry_hash
+           FROM regions
+           WHERE document_id = ? AND page_index = ? AND deleted_at IS NULL
+             AND state != 'rejected'
+           ORDER BY band_ordinal, reading_order""",
         (document_id, page_index),
     ).fetchall()
 
-    # Latest machine answer per crop, optionally pinned to one configuration.
-    ocr: dict[str, tuple[str | None, str]] = {}
-    q = """SELECT sr.crop_id AS crop_id, oc.transcription AS t,
-                  m.backend AS backend, r.tag AS tag
-           FROM ocr_candidates oc
-           JOIN ocr_runs r ON r.id = oc.ocr_run_id
-           JOIN models m ON m.id = r.model_id
-           JOIN source_regions sr ON sr.id = oc.source_region_id
-           WHERE sr.document_id = ? AND sr.page_index = ?"""
-    params: list[Any] = [document_id, page_index]
-    if tag is not None:
-        q += " AND r.tag = ?"
-        params.append(tag)
-    q += " ORDER BY oc.id"
-    for r in conn.execute(q, params):
-        ocr[r["crop_id"]] = (r["t"], r["backend"])
+    ocr = _readings(conn, page_index, [r["id"] for r in rows], tag)
+    crops = _crop_paths(conn, [r["id"] for r in rows])
 
     corrections: dict[tuple[str, int], dict[str, Any]] = {}
     for r in conn.execute(
@@ -198,13 +206,16 @@ def page_entries(
 
     out: list[ReviewEntry] = []
     for row in rows:
-        label = BAND_LABELS.get(row["band_index"], str(row["band_index"]))
-        key = (label, row["entry_index"])
-        machine, backend = ocr.get(row["crop_id"], (None, None))
+        band_index = row["band_ordinal"]
+        label = BAND_LABELS.get(band_index, str(band_index))
+        key = (label, row["reading_order"])
+        reading = ocr.get(row["id"])
+        machine = reading.text if reading else None
+        backend = reading.backend if reading else None
         corr = corrections.get(key)
         mine = findings.get(key, [])
         try:
-            bbox = json.loads(row["bbox"]) if row["bbox"] else None
+            bbox = json.loads(row["bbox_json"]) if row["bbox_json"] else None
         except (TypeError, ValueError):
             bbox = None
 
@@ -212,10 +223,10 @@ def page_entries(
         fields = _split_fields(human if human is not None else machine, label)
         out.append(ReviewEntry(
             page_index=page_index,
-            band_index=row["band_index"],
+            band_index=band_index,
             band_label=label,
-            entry_index=row["entry_index"],
-            crop_path=row["crop_path"],
+            entry_index=row["reading_order"],
+            crop_path=crops.get(row["id"]),
             bbox=bbox,
             role=row["role"] or "entry",
             machine=machine,
@@ -226,8 +237,80 @@ def page_entries(
             findings=mine,
             expected_own_id=_expected(mine, label),
             flagged=any(f["kind"] in TRANSCRIPTION_FINDINGS for f in mine),
+            region_uid=row["region_uid"],
+            state=row["state"],
+            stale_reading=bool(reading and not reading.current),
             **fields,
         ))
+    return out
+
+
+@dataclass(frozen=True)
+class _Reading:
+    text: str | None
+    backend: str | None
+    current: bool     # read from the pixels this region names now
+
+
+def _readings(
+    conn, page_index: int, region_ids: list[int], tag: str | None
+) -> dict[int, _Reading]:
+    """The best answer on record for each region, and whether it is still true.
+
+    An answer is current when the crop it came from was cut from the region's
+    present geometry. After a re-cut the old answers are still on record — they
+    describe pixels that were really there — but showing one as this column's
+    reading would be a claim about a column that has moved.
+    """
+    if not region_ids:
+        return {}
+    marks = ",".join("?" * len(region_ids))
+    q = f"""SELECT oc.region_id AS region_id, oc.transcription AS t,
+                   m.backend AS backend, r.tag AS tag,
+                   (rc.geometry_hash = g.geometry_hash) AS current
+            FROM ocr_candidates oc
+            JOIN regions g ON g.id = oc.region_id
+            JOIN ocr_runs r ON r.id = oc.ocr_run_id
+            JOIN models m ON m.id = r.model_id
+            LEFT JOIN region_crops rc ON rc.crop_key = oc.crop_key
+            WHERE oc.region_id IN ({marks})"""
+    params: list[Any] = list(region_ids)
+    if tag is not None:
+        # The tag pins which benchmark configuration pre-fills the page, but an
+        # interactive re-read is not a configuration — it is this region's
+        # current reading, and excluding it would hide the result of the edit
+        # that produced it.
+        q += " AND (r.tag = ? OR r.tag = 'interactive')"
+        params.append(tag)
+    q += " ORDER BY oc.id"
+
+    out: dict[int, _Reading] = {}
+    for r in conn.execute(q, params):
+        reading = _Reading(r["t"], r["backend"], bool(r["current"]))
+        kept = out.get(r["region_id"])
+        # Later answers win, except that an answer about the pixels as they are
+        # now is never displaced by an older one about pixels that are gone.
+        if kept is None or reading.current or not kept.current:
+            out[r["region_id"]] = reading
+    return out
+
+
+def _crop_paths(conn, region_ids: list[int]) -> dict[int, str]:
+    """The crop to show for each region, preferring one cut from its box today."""
+    if not region_ids:
+        return {}
+    marks = ",".join("?" * len(region_ids))
+    out: dict[int, str] = {}
+    for r in conn.execute(
+        f"""SELECT rc.region_id AS region_id, rc.path AS path,
+                   (rc.geometry_hash = g.geometry_hash) AS current
+            FROM region_crops rc JOIN regions g ON g.id = rc.region_id
+            WHERE rc.region_id IN ({marks}) AND rc.context = 'tight'
+            ORDER BY rc.id""",
+        region_ids,
+    ):
+        if r["current"] or r["region_id"] not in out:
+            out[r["region_id"]] = r["path"]
     return out
 
 
@@ -323,8 +406,8 @@ def save_correction(
 
 def progress(conn, document_id: str) -> dict[str, int]:
     total = conn.execute(
-        "SELECT COUNT(*) n FROM source_regions "
-        "WHERE document_id = ? AND context = 'tight'",
+        "SELECT COUNT(*) n FROM regions WHERE document_id = ? "
+        "AND deleted_at IS NULL AND state != 'rejected'",
         (document_id,),
     ).fetchone()["n"]
     done = conn.execute(

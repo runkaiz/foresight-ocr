@@ -6,11 +6,14 @@ stable document/page/band/entry tuple rather than on a candidate row), and until
 now nothing exercised it.
 """
 
+import json
 import sqlite3
 
 import pytest
 
 from familyocr.persistence.db import init_schema
+from familyocr.regions import store
+from familyocr.regions.model import geometry_hash
 from familyocr.review.data import (
     export_verified,
     page_entries,
@@ -36,33 +39,48 @@ def _db():
 
 
 def _segment(conn, crop_suffix="v1"):
-    """Simulate a segmentation pass: layout, bands, entries, regions."""
+    """Simulate a segmentation pass: layout, bands, regions and their crops.
+
+    A pass re-cuts the crops and keeps the regions, which is what reconcile does
+    and what the review path now reads: the region is the column, and the crop
+    is one rendering of the pixels it currently names.
+    """
     conn.execute("DELETE FROM page_layouts")
     cur = conn.execute(
         "INSERT INTO page_layouts (document_id, page_index) VALUES ('doc', 58)"
     )
     layout_id = cur.lastrowid
-    cur = conn.execute(
+    conn.execute(
         "INSERT INTO bands (page_layout_id, band_index, label, bbox_json) "
         "VALUES (?,0,'庶','[]')", (layout_id,)
     )
-    band_id = cur.lastrowid
     for entry in (0, 1):
-        cur = conn.execute(
-            "INSERT INTO physical_entries (band_id, entry_index, bbox_json) "
-            "VALUES (?,?,'[]')", (band_id, entry)
-        )
+        bbox = [1000.0 - 300 * entry, 0.0, 1300.0 - 300 * entry, 900.0]
+        digest = geometry_hash("doc", 58, bbox)
+        row = conn.execute(
+            "SELECT id FROM regions WHERE document_id='doc' AND page_index=58 "
+            "AND reading_order = ?", (entry,)
+        ).fetchone()
+        if row is None:
+            region = store.create_region(
+                conn, "doc", 58, bbox,
+                band_label="庶", band_ordinal=0,
+                reading_order=entry, entry_index=entry,
+            )
+            region_id = region.id
+        else:
+            region_id = row["id"]
         conn.execute(
-            "INSERT INTO source_regions (entry_id, document_id, page_index, role, "
-            "context, bbox_json, crop_id, crop_path) "
-            "VALUES (?, 'doc', 58, 'entry', 'tight', '[]', ?, ?)",
-            (cur.lastrowid, f"doc_p0058_b0_e{entry:02d}_{crop_suffix}",
-             f"/crops/{crop_suffix}_{entry}.png"),
+            "INSERT INTO region_crops (region_id, geometry_hash, context, pad_frac, "
+            "variant, pixel_bbox_json, crop_key, path, created_at) "
+            "VALUES (?,?, 'tight', 0.0, 'maxrgb', ?, ?, ?, 'now')",
+            (region_id, digest, json.dumps([int(v) for v in bbox]),
+             f"crop_{crop_suffix}_{entry}", f"/crops/{crop_suffix}_{entry}.png"),
         )
     conn.commit()
 
 
-def _add_ocr(conn, texts):
+def _add_ocr(conn, texts, tag="t"):
     conn.execute(
         "INSERT INTO models (id, name, version, backend) "
         "VALUES ('m','paddleocr_vl','1.6','paddleocr_vl') "
@@ -70,16 +88,20 @@ def _add_ocr(conn, texts):
     )
     cur = conn.execute(
         "INSERT INTO ocr_runs (run_id, model_id, input_variant, tag) "
-        "VALUES (1,'m','maxrgb','t')"
+        "VALUES (1,'m','maxrgb',?)", (tag,)
     )
     run = cur.lastrowid
-    regions = conn.execute(
-        "SELECT id, crop_id FROM source_regions ORDER BY id"
+    # The newest crop of each region is what a pass would have read.
+    crops = conn.execute(
+        "SELECT region_id, crop_key, MAX(id) FROM region_crops GROUP BY region_id "
+        "ORDER BY region_id"
     ).fetchall()
-    for region, text in zip(regions, texts):
+    for crop, text in zip(crops, texts):
         conn.execute(
-            "INSERT INTO ocr_candidates (source_region_id, ocr_run_id, "
-            "transcription) VALUES (?,?,?)", (region["id"], run, text)
+            "INSERT INTO ocr_candidates (region_id, ocr_run_id, crop_key, "
+            "cache_key, transcription) VALUES (?,?,?,?,?)",
+            (crop["region_id"], run, crop["crop_key"],
+             f"{crop['crop_key']}:{run}", text),
         )
     conn.commit()
 
@@ -111,11 +133,8 @@ def test_correction_survives_reprocessing():
     _add_ocr(conn, ["庶一長子", "庶二次子"])
     save_correction(conn, "doc", 58, "庶", 0, "庶一次子")
 
-    # Re-segment: regions, entries and their OCR candidates are all replaced,
-    # exactly as `familyocr segment` does when geometry changes.
-    conn.execute("DELETE FROM physical_entries")
-    conn.execute("DELETE FROM source_regions")
-    conn.commit()
+    # Re-segment: the page is cut again and read again, exactly as
+    # `familyocr segment` does when the pixels change.
     _segment(conn, crop_suffix="v2")
     _add_ocr(conn, ["庶一長子", "庶二次子"])
 

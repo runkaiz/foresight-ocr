@@ -21,6 +21,12 @@ from urllib.parse import parse_qs, urlparse
 from familyocr.ocr.fields import compose_entry, own_id_from_digits
 from familyocr.persistence import connect, init_schema
 from familyocr.project import Project
+from familyocr.regions.recut import (
+    PageNotSegmentable,
+    apply_comb,
+    comb_inputs,
+    plan_comb,
+)
 from familyocr.review.data import (
     export_document,
     export_verified,
@@ -34,6 +40,47 @@ from familyocr.review.data import (
 )
 
 APP_HTML = Path(__file__).with_name("app.html")
+
+
+def _comb_preview(conn, project: Project, document_id: str, page: int, q) -> dict:
+    """The lattice at a given phase, plus what it was fitted from.
+
+    The measurements come back with the plan because they are the reviewer's
+    evidence: a page that detected ten gutters where its neighbours detect
+    thirteen is a page whose phase was voted on by too few witnesses, and that
+    is worth seeing before deciding how far to move it.
+    """
+    inputs = comb_inputs(conn, project, document_id, page)
+    def number(name: str) -> float | None:
+        raw = q.get(name, [""])[0]
+        return float(raw) if raw not in ("", None) else None
+
+    plan = plan_comb(
+        inputs,
+        phase_offset=float(q.get("phase", ["0"])[0] or 0.0),
+        pitch=number("pitch"),
+        snap=q.get("snap", ["1"])[0] not in ("0", "false"),
+        text_left=number("left"),
+        text_right=number("right"),
+    )
+    return {
+        **plan.to_dict(),
+        "fitted_pitch": inputs.pitch,
+        "corpus_pitch": inputs.corpus_pitch,
+        "used_corpus_pitch": inputs.used_corpus_pitch,
+        "pitch_confidence": inputs.pitch_confidence,
+        "gutters": inputs.gutters,
+        # Named apart from the plan's own extent, which this dict already
+        # carries: one is what the lattice was fitted to, the other is what the
+        # reviewer chose, and collapsing them made the echo contradict the
+        # boundaries it came with.
+        "fitted_text_left": inputs.text_left,
+        "fitted_text_right": inputs.text_right,
+        "bands": [
+            {"ordinal": b.ordinal, "label": b.label, "top": b.top, "bottom": b.bottom}
+            for b in inputs.bands
+        ],
+    }
 
 
 def _handler_factory(project: Project, document_id: str, tag: str | None,
@@ -95,6 +142,20 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
                         "progress": progress(conn, document_id),
                         "tag": tag,
                     })
+                finally:
+                    conn.close()
+                return
+
+            if url.path == "/api/comb":
+                # What the lattice would be at this phase. Read-only on purpose:
+                # a person needs to see where the boundaries land before paying
+                # for a re-cut and a re-read of the page.
+                page = int(q.get("page", ["0"])[0])
+                conn = _conn()
+                try:
+                    self._json(_comb_preview(conn, project, document_id, page, q))
+                except PageNotSegmentable as exc:
+                    self._json({"error": str(exc)}, 400)
                 finally:
                     conn.close()
                 return
@@ -190,6 +251,48 @@ def _handler_factory(project: Project, document_id: str, tag: str | None,
                     conn.close()
                 return
 
+            if url.path == "/api/recut":
+                # The one edit that repairs a whole page: the columns are moved
+                # onto the lattice the reviewer chose, then cut and read again.
+                conn = _conn()
+                try:
+                    page = int(payload["page"])
+                    inputs = comb_inputs(conn, project, document_id, page)
+                    def _num(name):
+                        value = payload.get(name)
+                        return float(value) if value not in (None, "") else None
+
+                    plan = plan_comb(
+                        inputs,
+                        phase_offset=float(payload.get("phase_offset") or 0.0),
+                        pitch=_num("pitch"),
+                        snap=bool(payload.get("snap", True)),
+                        text_left=_num("text_left"),
+                        text_right=_num("text_right"),
+                    )
+                    report = apply_comb(
+                        conn, project, plan, inputs,
+                        actor=reviewer,
+                        reocr=bool(payload.get("reocr", True)),
+                        backend=payload.get("backend") or "paddleocr_vl",
+                    )
+                    self._json({
+                        "ok": not report.errors,
+                        "report": report.to_dict(),
+                        "summary": report.summary(),
+                        "progress": progress(conn, document_id),
+                    })
+                except PageNotSegmentable as exc:
+                    self._json({"error": str(exc)}, 400)
+                except Exception as exc:                     # noqa: BLE001
+                    # A missing recognizer or an unreadable page must reach the
+                    # reviewer as a sentence, not as a dead request; the geometry
+                    # is already committed and is what they asked for.
+                    self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+                finally:
+                    conn.close()
+                return
+
             if url.path == "/api/export":
                 conn = _conn()
                 try:
@@ -219,6 +322,14 @@ def serve(
     reviewer: str = "local",
     open_browser: bool = True,
 ) -> None:
+    # Band labels are document data. Without this the server reads them from the
+    # fallback profile, which is right for the first volume and silently wrong
+    # for every other one.
+    from familyocr.context import set_profile
+    from familyocr.document.profile import load_profile
+
+    set_profile(load_profile(project.configs, document_id))
+
     conn = connect(project.db_path)
     init_schema(conn)
     if tag is None:

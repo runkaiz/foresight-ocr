@@ -157,7 +157,7 @@ def set_geometry(
 # function with a `state` argument that could be passed by mistake.
 
 
-def create_proposed(
+def create_region(
     conn: sqlite3.Connection,
     document_id: str,
     page_index: int,
@@ -171,7 +171,15 @@ def create_proposed(
     transform_id: str | None = None,
     orig_quad: list[list[float]] | None = None,
     run_id: int | None = None,
+    state: str = RegionState.PROPOSED,
+    created_by: str = "machine",
 ) -> Region:
+    """Insert a region. Who made it and how firm it is are the caller's to say.
+
+    A column the lattice found and a column a person asked for are the same row
+    with different answers to those two questions, and the difference is what a
+    later automatic pass consults before moving it.
+    """
     box = [float(v) for v in bbox]
     uid = new_region_uid()
     now = _now()
@@ -180,18 +188,28 @@ def create_proposed(
         "geometry_hash, transform_id, orig_quad_json, band_label, band_ordinal, "
         "reading_order, entry_index, role, state, created_by, origin_run_id, "
         "last_run_id, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'proposed','machine',?,?,?,?)",
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             uid, document_id, page_index, json.dumps(box),
             geometry_hash(document_id, page_index, box), transform_id,
             json.dumps(orig_quad) if orig_quad is not None else None,
             band_label, band_ordinal, reading_order, entry_index, role,
-            run_id, run_id, now, now,
+            state, created_by, run_id, run_id, now, now,
         ),
     )
     region = get(conn, uid)
     assert region is not None
     return region
+
+
+def create_proposed(
+    conn: sqlite3.Connection,
+    document_id: str,
+    page_index: int,
+    bbox: Sequence[float],
+    **kwargs: Any,
+) -> Region:
+    return create_region(conn, document_id, page_index, bbox, **kwargs)
 
 
 def reposition(
@@ -239,6 +257,23 @@ def retire(conn: sqlite3.Connection, region: Region, *, run_id: int | None = Non
         "UPDATE regions SET deleted_at = ?, last_run_id = ?, updated_at = ? "
         "WHERE region_uid = ?",
         (_now(), run_id, _now(), region.region_uid),
+    )
+
+
+def reject(conn: sqlite3.Connection, region: Region, *, actor: str = "local") -> None:
+    """Record that a person says this column is not on the page.
+
+    Distinct from `retire`, which withdraws a proposal the machine no longer
+    makes. A withdrawn proposal comes back the moment the detector proposes the
+    same box again — that is the point of it. A rejected one must not: the
+    detector proposing it again is exactly the disagreement the person already
+    settled, and reviving it would be the machine arguing with the reviewer once
+    per run, forever.
+    """
+    conn.execute(
+        "UPDATE regions SET state = ?, deleted_at = COALESCE(deleted_at, ?), "
+        "updated_by = ?, updated_at = ? WHERE region_uid = ?",
+        (RegionState.REJECTED, _now(), actor, _now(), region.region_uid),
     )
 
 

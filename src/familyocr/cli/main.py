@@ -778,6 +778,7 @@ def segment(
     from familyocr.regions.reconcile import Proposal, reconcile_page
     from familyocr.segmentation.entries import (
         CONTEXTS,
+        resolve_comb,
         segment_page,
         to_original_quad,
     )
@@ -902,25 +903,14 @@ def segment(
                 band_geom.append((b["band_index"], float(y0), float(y1)))
                 band_ids[b["band_index"]] = b["id"]
 
-            # Autocorrelation can lock onto half the true period on a noisy page
-            # (a title page, say), which would cut every entry in two. Fall back
-            # to the corpus pitch whenever the page's own estimate is weak or far
-            # from the template — the same prior discipline used for frames.
-            page_pitch = float(geom["column_pitch"])
-            if (
-                geom["pitch_confidence"] < 0.3
-                or abs(page_pitch - corpus_pitch) > 0.1 * corpus_pitch
-            ):
+            # Shared with the editor's re-cut, so a page re-cut at phase zero
+            # reproduces the boxes this pass produced rather than something
+            # subtly different that would read as a change.
+            page_pitch, text_left, text_right, used_corpus = resolve_comb(
+                geom, corpus_pitch, corpus_text_left, corpus_text_right
+            )
+            if used_corpus:
                 pitch_overrides.append(page_index)
-                page_pitch = corpus_pitch
-
-            # The lattice domain comes from the template, not from this page's
-            # ink extent. Pages are already normalized to a common frame, so the
-            # entry grid is a property of the frame; a faint rightmost column
-            # pulls the measured text edge inward by less than one pitch and the
-            # last entry of the band disappears entirely.
-            text_left = min(float(geom["text_left"]), corpus_text_left)
-            text_right = max(float(geom["text_right"]), corpus_text_right)
 
             regions = segment_page(
                 page_index=page_index,
@@ -1123,7 +1113,7 @@ def _report_reconcile(reports: list[Any]) -> None:
         return
     totals = {
         k: sum(getattr(r, k) for r in reports)
-        for k in ("unchanged", "moved", "created", "revived", "retired")
+        for k in ("unchanged", "moved", "created", "revived", "retired", "refused")
     }
     divergent = [(r.page_index, len(r.divergent)) for r in reports if r.divergent]
     orphaned = [(r.page_index, len(r.orphaned)) for r in reports if r.orphaned]
@@ -1142,6 +1132,11 @@ def _report_reconcile(reports: list[Any]) -> None:
             f"[cyan]{totals['created']}[/cyan] new, "
             f"[cyan]{totals['revived']}[/cyan] restored, "
             f"[yellow]{totals['retired']}[/yellow] withdrawn"
+        )
+    if totals["refused"]:
+        console.print(
+            f"[dim]{totals['refused']} proposal(s) name a column a reviewer said "
+            f"is not there; not re-inserted[/dim]"
         )
     if divergent:
         n = sum(c for _, c in divergent)
@@ -2141,6 +2136,103 @@ def region_move(
                 f"[green]{answer.transcription or '—'}[/green] "
                 f"({'cached' if answer.reused else 'freshly read'})"
             )
+
+
+page_app = typer.Typer(help="Work on the layout of a single page.")
+app.add_typer(page_app, name="page")
+
+
+@page_app.command("comb")
+def page_comb(
+    document_id: str,
+    page: int,
+    phase: float = typer.Option(0.0, help="shift every boundary by this many px"),
+    pitch: Optional[float] = typer.Option(None, help="override the column pitch"),
+    snap: bool = typer.Option(True, help="let boundaries settle onto detected gutters"),
+    left: Optional[float] = typer.Option(None, help="left edge the lattice stops at"),
+    right: Optional[float] = typer.Option(None, help="right edge the lattice starts at"),
+) -> None:
+    """Where the column boundaries would fall, without changing anything."""
+    from familyocr.regions.recut import comb_inputs, plan_comb
+
+    project = Project.discover()
+    conn = _open_db(project)
+    _activate(project, document_id)
+
+    inputs = comb_inputs(conn, project, document_id, page)
+    plan = plan_comb(inputs, phase_offset=phase, pitch=pitch, snap=snap,
+                     text_left=left, text_right=right)
+    console.print(
+        f"pitch {plan.pitch:.1f} px (page measured {inputs.pitch:.1f}, corpus "
+        f"{inputs.corpus_pitch:.1f}, confidence {inputs.pitch_confidence:.2f}"
+        f"{', corpus used' if inputs.used_corpus_pitch else ''})"
+    )
+    console.print(
+        f"{len(inputs.gutters)} gutters detected; "
+        f"{sum(plan.snapped)} of {len(plan.boundaries)} boundaries sit on one"
+    )
+    console.print(
+        f"[green]{plan.entries_per_band}[/green] entries per band × "
+        f"{len(inputs.bands)} bands = {len(plan.proposals)} columns"
+    )
+    edges = sorted(plan.boundaries)
+    console.print("boundaries: " + " ".join(f"{b:.0f}" for b in edges))
+    if len(edges) > 1:
+        gaps = [b - a for a, b in zip(edges, edges[1:])]
+        console.print("spacing:    " + " ".join(f"{g:.0f}" for g in gaps))
+
+
+@page_app.command("recut")
+def page_recut(
+    document_id: str,
+    page: int,
+    phase: float = typer.Option(0.0, help="shift every boundary by this many px"),
+    pitch: Optional[float] = typer.Option(None, help="override the column pitch"),
+    snap: bool = typer.Option(True, help="let boundaries settle onto detected gutters"),
+    left: Optional[float] = typer.Option(None, help="left edge the lattice stops at"),
+    right: Optional[float] = typer.Option(None, help="right edge the lattice starts at"),
+    reocr: bool = typer.Option(True, help="re-read the columns that moved"),
+    backend: str = typer.Option("paddleocr_vl", help="recognizer to re-read with"),
+    variant: str = typer.Option("maxrgb", help="crop variant to cut"),
+    reviewer: str = typer.Option("local", help="who is making this change"),
+) -> None:
+    """Move a page's columns onto a corrected lattice, then cut and read them.
+
+    For the page where every entry came back wrong because the comb locked onto
+    the wrong phase — one number, one pass, instead of dragging each box.
+    """
+    from familyocr.regions.recut import apply_comb, comb_inputs, plan_comb
+
+    project = Project.discover()
+    conn = _open_db(project)
+    _activate(project, document_id)
+
+    inputs = comb_inputs(conn, project, document_id, page)
+    plan = plan_comb(inputs, phase_offset=phase, pitch=pitch, snap=snap,
+                     text_left=left, text_right=right)
+    with console.status(f"re-cutting p{page}…"):
+        report = apply_comb(
+            conn, project, plan, inputs,
+            actor=reviewer, reocr=reocr, backend=backend, variant=variant,
+        )
+    console.print(report.summary())
+    if report.findings_cleared:
+        console.print(
+            f"[dim]{report.findings_cleared} finding(s) dropped; they described "
+            f"entry positions this re-cut has changed — run `validate` again[/dim]"
+        )
+    if report.corrections_rekeyed:
+        console.print(
+            f"[dim]{report.corrections_rekeyed} correction(s) followed their "
+            f"column to its new position[/dim]"
+        )
+    if report.corrections_stranded:
+        console.print(
+            f"[yellow]{report.corrections_stranded}[/yellow] correction(s) belong "
+            f"to columns this re-cut withdrew; they are kept but no longer shown"
+        )
+    for message in report.errors[:5]:
+        console.print(f"[red]{message}[/red]")
 
 
 if __name__ == "__main__":

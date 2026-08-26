@@ -1,0 +1,35 @@
+document_id: 丙辰庶富教1
+band_labels:
+- 庶
+- 富
+- 教
+generation_chain:
+- 允
+- 庶
+- 富
+- 教
+bands_per_page: 3
+notes: >-
+  當前文檔的識別輪廓；字形混淆來自 2026-08-25 已完整校對的
+  222 條人物記錄。只在編號數詞位置使用，不改寫原始 OCR。
+label_variants:
+  冨: 富
+label_confusions:
+  尤: 允
+  九: 允
+  笈: 庶
+  廣: 庶
+  紫: 庶
+  度: 庶
+  此: 庶
+  歲: 庶
+  庀: 庶
+  巖: 庶
+  座: 庶
+  廉: 庶
+  所: 庶
+  卅: 庶
+  甯: 富
+numeral_confusions:
+  大: 六
+  甘: 廿

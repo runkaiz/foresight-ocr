@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""PaddleOCR-VL runner on MLX/Metal. Runs inside .venv-vlm; must not import familyocr.
+"""PaddleOCR-VL runner on MLX/Metal. Runs inside .venv-vlm; must not import foresight-ocr.
 
 Usage:
     python paddleocr_vl.py --probe
@@ -34,7 +34,7 @@ def probe() -> int:
     try:
         import mlx.core as mx
         import mlx_vlm
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - probe must report any import failure
         print(f"import failed: {exc}", file=sys.stderr)
         return 1
     print(f"mlx-vlm {mlx_vlm.__version__} on {mx.default_device()}")
@@ -46,10 +46,12 @@ def _load(model_id: str):
 
     try:
         return load(model_id), model_id
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if model_id == DEFAULT_MODEL:
-            print(f"{model_id} failed to load ({exc}); trying {FALLBACK_MODEL}",
-                  file=sys.stderr)
+            print(
+                f"{model_id} failed to load ({exc}); trying {FALLBACK_MODEL}",
+                file=sys.stderr,
+            )
             from mlx_vlm import load as _reload
 
             return _reload(FALLBACK_MODEL), FALLBACK_MODEL
@@ -70,9 +72,7 @@ def _prepare_image(path: str, scale: float, workdir: Path) -> str:
 
     with Image.open(path) as im:
         w, h = im.size
-        out = im.resize(
-            (max(int(w * scale), 8), max(int(h * scale), 8)), Image.LANCZOS
-        )
+        out = im.resize((max(int(w * scale), 8), max(int(h * scale), 8)), Image.LANCZOS)
         dest = workdir / Path(path).name
         out.save(dest)
     return str(dest)
@@ -90,14 +90,18 @@ def _run_batched(model, processor, items, prompt_text, max_tokens, image_paths):
 
     config = model.config
     prompts = [
-        apply_chat_template(processor, config, prompt_text, num_images=1)
-        for _ in items
+        apply_chat_template(processor, config, prompt_text, num_images=1) for _ in items
     ]
     # `images` is one image per prompt, flat. Passing a list-of-lists raises
     # deep inside the processor with an opaque AttributeError.
     outputs = batch_generate(
-        model, processor, images=list(image_paths), prompts=prompts,
-        max_tokens=max_tokens, verbose=False, group_by_shape=True,
+        model,
+        processor,
+        images=list(image_paths),
+        prompts=prompts,
+        max_tokens=max_tokens,
+        verbose=False,
+        group_by_shape=True,
     )
     texts = getattr(outputs, "texts", outputs)
     return [
@@ -109,9 +113,6 @@ def _run_batched(model, processor, items, prompt_text, max_tokens, image_paths):
 def main(manifest_path: str, out_path: str) -> int:
     import shutil
     import tempfile
-
-    from mlx_vlm import generate
-    from mlx_vlm.prompt_utils import apply_chat_template
 
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     options = manifest.get("options") or {}
@@ -126,18 +127,40 @@ def main(manifest_path: str, out_path: str) -> int:
     (model, processor), resolved = _load(manifest.get("model") or DEFAULT_MODEL)
     config = model.config
 
-    workdir = Path(tempfile.mkdtemp(prefix="familyocr-vl-scaled-"))
+    workdir = Path(tempfile.mkdtemp(prefix="foresight-ocr-vl-scaled-"))
     try:
         return _recognize(
-            model, processor, resolved, config, manifest, out_path, workdir,
-            prompt_text, max_tokens, temperature, batched, scale,
+            model,
+            processor,
+            resolved,
+            config,
+            manifest,
+            out_path,
+            workdir,
+            prompt_text,
+            max_tokens,
+            temperature,
+            batched,
+            scale,
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _recognize(model, processor, resolved, config, manifest, out_path, workdir,
-               prompt_text, max_tokens, temperature, batched, scale) -> int:
+def _recognize(
+    model,
+    processor,
+    resolved,
+    config,
+    manifest,
+    out_path,
+    workdir,
+    prompt_text,
+    max_tokens,
+    temperature,
+    batched,
+    scale,
+) -> int:
     from mlx_vlm import generate
     from mlx_vlm.prompt_utils import apply_chat_template
 
@@ -151,8 +174,10 @@ def _recognize(model, processor, resolved, config, manifest, out_path, workdir,
                 model, processor, items, prompt_text, max_tokens, paths
             )
         except Exception as exc:  # noqa: BLE001 - fall back rather than lose a run
-            print(f"batched generation failed ({exc}); falling back to per-crop",
-                  file=sys.stderr)
+            print(
+                f"batched generation failed ({exc}); falling back to per-crop",
+                file=sys.stderr,
+            )
             batched = False
         else:
             per_crop = (time.perf_counter() - started) * 1000.0 / max(len(items), 1)
@@ -164,20 +189,24 @@ def _recognize(model, processor, resolved, config, manifest, out_path, workdir,
                     "characters": [],
                     "latency_ms": per_crop,
                     "error": None if text else "empty generation",
-                    "raw": {"prompt": prompt_text, "batched": True,
-                            "image_scale": scale},
+                    "raw": {
+                        "prompt": prompt_text,
+                        "batched": True,
+                        "image_scale": scale,
+                    },
                 }
-                for it, text in zip(items, texts)
+                for it, text in zip(items, texts, strict=True)
             ]
             Path(out_path).write_text(
-                json.dumps({"model_version": resolved, "results": results},
-                           ensure_ascii=False),
+                json.dumps(
+                    {"model_version": resolved, "results": results}, ensure_ascii=False
+                ),
                 encoding="utf-8",
             )
             return 0
 
     results = []
-    for item, image_path in zip(items, paths):
+    for item, image_path in zip(items, paths, strict=True):
         crop_id = item["crop_id"]
         started = time.perf_counter()
         try:
@@ -185,34 +214,48 @@ def _recognize(model, processor, resolved, config, manifest, out_path, workdir,
                 processor, config, prompt_text, num_images=1
             )
             out = generate(
-                model, processor, formatted, [image_path],
-                max_tokens=max_tokens, temperature=temperature, verbose=False,
+                model,
+                processor,
+                formatted,
+                [image_path],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                verbose=False,
             )
             text = getattr(out, "text", out)
             text = (text or "").strip()
-            results.append({
-                "crop_id": crop_id,
-                "transcription": text or None,
-                # The model emits text without token-level scores through this
-                # path, so confidence is left null rather than invented.
-                "confidence": None,
-                "characters": [],
-                "latency_ms": (time.perf_counter() - started) * 1000.0,
-                "error": None if text else "empty generation",
-                "raw": {"prompt": prompt_text, "batched": False,
-                        "image_scale": scale},
-            })
+            results.append(
+                {
+                    "crop_id": crop_id,
+                    "transcription": text or None,
+                    # The model emits text without token-level scores through this
+                    # path, so confidence is left null rather than invented.
+                    "confidence": None,
+                    "characters": [],
+                    "latency_ms": (time.perf_counter() - started) * 1000.0,
+                    "error": None if text else "empty generation",
+                    "raw": {
+                        "prompt": prompt_text,
+                        "batched": False,
+                        "image_scale": scale,
+                    },
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - one bad crop must not stop the batch
-            results.append({
-                "crop_id": crop_id, "transcription": None, "confidence": None,
-                "characters": [],
-                "latency_ms": (time.perf_counter() - started) * 1000.0,
-                "error": f"{type(exc).__name__}: {exc}", "raw": None,
-            })
+            results.append(
+                {
+                    "crop_id": crop_id,
+                    "transcription": None,
+                    "confidence": None,
+                    "characters": [],
+                    "latency_ms": (time.perf_counter() - started) * 1000.0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "raw": None,
+                }
+            )
 
     Path(out_path).write_text(
-        json.dumps({"model_version": resolved, "results": results},
-                   ensure_ascii=False),
+        json.dumps({"model_version": resolved, "results": results}, ensure_ascii=False),
         encoding="utf-8",
     )
     return 0

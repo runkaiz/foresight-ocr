@@ -1,6 +1,6 @@
 import pytest
 
-from familyocr.validation.numerals import (
+from foresight_ocr.validation.numerals import (
     format_numeral,
     parse_entry_id,
     parse_numeral,

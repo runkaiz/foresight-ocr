@@ -1,11 +1,10 @@
-import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from familyocr.ocr.base import OCRResult
-from familyocr.ocr.harness import (
+from foresight_ocr.ocr.base import OCRResult
+from foresight_ocr.ocr.harness import (
     CropRef,
     RunOutcome,
     agreement,
@@ -18,7 +17,7 @@ from familyocr.ocr.harness import (
     store_results,
     summarize,
 )
-from familyocr.persistence.db import init_schema
+from foresight_ocr.persistence.db import init_schema
 
 
 def make_outcome(backend, texts, variant="original", context="tight"):
@@ -26,13 +25,22 @@ def make_outcome(backend, texts, variant="original", context="tight"):
     refs, results = [], []
     for page, band, entry, text in texts:
         crop_id = f"doc_p{page:04d}_b{band}_e{entry:02d}_{context}"
-        refs.append(CropRef(crop_id, Path(f"{crop_id}.png"), page, band, entry,
-                            context, variant))
-        results.append(OCRResult(
-            crop_id=crop_id, transcription=text, backend=backend,
-            model_version="v1", input_variant=variant, context=context,
-            error=None if text else "no text detected",
-        ))
+        refs.append(
+            CropRef(
+                crop_id, Path(f"{crop_id}.png"), page, band, entry, context, variant
+            )
+        )
+        results.append(
+            OCRResult(
+                crop_id=crop_id,
+                transcription=text,
+                backend=backend,
+                model_version="v1",
+                input_variant=variant,
+                context=context,
+                error=None if text else "no text detected",
+            )
+        )
     return RunOutcome(backend, variant, context, "v1", results, refs)
 
 
@@ -43,34 +51,42 @@ def test_discover_crops_parses_page_band_entry(tmp_path):
         "doc_p0058_b0_e01_tight.png",
         "doc_p0058_b0_e00_tight.png",
         "doc_p0057_b2_e03_tight.png",
-        "doc_p0058_b0_e00_medium.png",   # different context, must be ignored
+        "doc_p0058_b0_e00_medium.png",  # different context, must be ignored
     ]:
         (vdir / name).touch()
 
     refs = discover_crops(tmp_path, "original", "tight", "doc")
     assert [(r.page_index, r.band_index, r.entry_index) for r in refs] == [
-        (57, 2, 3), (58, 0, 0), (58, 0, 1),
+        (57, 2, 3),
+        (58, 0, 0),
+        (58, 0, 1),
     ]
 
 
 def test_sequence_score_uses_only_the_own_id_field():
     # The parent id is not sequential; including it would look like errors.
-    outcome = make_outcome("b", [
-        (58, 0, 0, "庶一允二百八十六次子"),
-        (58, 0, 1, "庶二允九長子"),
-        (58, 0, 2, "庶三允四百長子"),
-    ])
+    outcome = make_outcome(
+        "b",
+        [
+            (58, 0, 0, "庶一允二百八十六次子"),
+            (58, 0, 1, "庶二允九長子"),
+            (58, 0, 2, "庶三允四百長子"),
+        ],
+    )
     seq = sequence_score(outcome)
     assert seq["庶"]["clean_run_rate"] == 1.0
     assert seq["庶"]["findings"] == []
 
 
 def test_sequence_score_catches_a_substituted_digit():
-    outcome = make_outcome("b", [
-        (58, 0, 0, "庶三百三十五長子"),
-        (58, 0, 1, "庶三百三十六長子"),
-        (58, 0, 2, "庶三百三十八長子"),   # should be 三十七
-    ])
+    outcome = make_outcome(
+        "b",
+        [
+            (58, 0, 0, "庶三百三十五長子"),
+            (58, 0, 1, "庶三百三十六長子"),
+            (58, 0, 2, "庶三百三十八長子"),  # should be 三十七
+        ],
+    )
     seq = sequence_score(outcome)
     kinds = [f["kind"] for f in seq["庶"]["findings"]]
     assert "gap" in kinds
@@ -78,31 +94,45 @@ def test_sequence_score_catches_a_substituted_digit():
 
 
 def test_unreadable_crop_is_unparsed_not_a_sequence_break():
-    outcome = make_outcome("b", [
-        (58, 0, 0, "庶一長子"),
-        (58, 0, 1, None),
-        (58, 0, 2, "庶二長子"),
-    ])
+    outcome = make_outcome(
+        "b",
+        [
+            (58, 0, 0, "庶一長子"),
+            (58, 0, 1, None),
+            (58, 0, 2, "庶二長子"),
+        ],
+    )
     seq = sequence_score(outcome)
     assert [f["kind"] for f in seq["庶"]["findings"]] == ["unparsed"]
     assert seq["庶"]["clean_run_rate"] == 1.0
 
 
 def test_bands_are_scored_separately():
-    outcome = make_outcome("b", [
-        (58, 0, 0, "庶一"), (58, 1, 0, "富一"),
-        (58, 0, 1, "庶二"), (58, 1, 1, "富五"),
-    ])
+    outcome = make_outcome(
+        "b",
+        [
+            (58, 0, 0, "庶一"),
+            (58, 1, 0, "富一"),
+            (58, 0, 1, "庶二"),
+            (58, 1, 1, "富五"),
+        ],
+    )
     seq = sequence_score(outcome)
     assert seq["庶"]["findings"] == []
     assert [f["kind"] for f in seq["富"]["findings"]] == ["gap"]
 
 
 def test_sequence_totals_weights_bands_by_transition_count():
-    outcome = make_outcome("b", [
-        (58, 0, 0, "庶一"), (58, 0, 1, "庶二"), (58, 0, 2, "庶三"),
-        (58, 1, 0, "富一"), (58, 1, 1, "富九"),
-    ])
+    outcome = make_outcome(
+        "b",
+        [
+            (58, 0, 0, "庶一"),
+            (58, 0, 1, "庶二"),
+            (58, 0, 2, "庶三"),
+            (58, 1, 0, "富一"),
+            (58, 1, 1, "富九"),
+        ],
+    )
     parse_rate, clean = sequence_totals(sequence_score(outcome))
     assert parse_rate == 1.0
     # 庶 contributes 2 clean transitions, 富 contributes 1 broken one.
@@ -110,8 +140,12 @@ def test_sequence_totals_weights_bands_by_transition_count():
 
 
 def test_agreement_reports_disagreeing_ids():
-    a = make_outcome("a", [(58, 0, 0, "庶三百四十九長子"), (58, 0, 1, "庶三百五十長子")])
-    b = make_outcome("b", [(58, 0, 0, "庶三百四十八長子"), (58, 0, 1, "庶三百五十長子")])
+    a = make_outcome(
+        "a", [(58, 0, 0, "庶三百四十九長子"), (58, 0, 1, "庶三百五十長子")]
+    )
+    b = make_outcome(
+        "b", [(58, 0, 0, "庶三百四十八長子"), (58, 0, 1, "庶三百五十長子")]
+    )
     agr = agreement(a, b)
     assert agr["compared"] == 2
     assert agr["identical_own_id"] == 1
@@ -172,8 +206,10 @@ def _seeded_db(tmp_path):
         "INSERT INTO physical_entries (id, band_id, entry_index, bbox_json) "
         "VALUES (1,1,0,'[]'), (2,1,1,'[]')"
     )
-    for sid, eid, crop in ((1, 1, "doc_p0058_b0_e00_tight"),
-                           (2, 2, "doc_p0058_b0_e01_tight")):
+    for sid, eid, crop in (
+        (1, 1, "doc_p0058_b0_e00_tight"),
+        (2, 2, "doc_p0058_b0_e01_tight"),
+    ):
         conn.execute(
             "INSERT INTO source_regions (id, entry_id, document_id, page_index, "
             "role, context, bbox_json, crop_id, crop_path) "
@@ -186,9 +222,13 @@ def _seeded_db(tmp_path):
 
 def test_stored_results_round_trip_through_the_database(tmp_path):
     conn = _seeded_db(tmp_path)
-    outcome = make_outcome("ppocr_v5", [
-        (58, 0, 0, "庶一長子"), (58, 0, 1, "庶二次子"),
-    ])
+    outcome = make_outcome(
+        "ppocr_v5",
+        [
+            (58, 0, 0, "庶一長子"),
+            (58, 0, 1, "庶二次子"),
+        ],
+    )
     stored = store_results(conn, "doc", 1, outcome)
     conn.commit()
     assert stored == 2

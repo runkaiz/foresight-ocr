@@ -1,6 +1,6 @@
 # Corpus analysis — `丙辰清廉麗熙2`
 
-Generated 2026-08-16T14:46:00+00:00 by `familyocr inspect`.
+Generated 2026-08-16T14:46:00+00:00 by `foresight-ocr inspect`.
 
 ## Document
 
@@ -31,7 +31,7 @@ The corpus is **not** homogeneous. Stages downstream of extraction must branch o
 
 Every page holds a single JPEG2000 (`JPXDecode`) stream. Colorspace and bit depth live inside the codestream rather than in the PDF image dictionary, which is why `colorspace` reads `jpx-internal` above.
 
-Because the embedded stream is already a complete `.jp2` file, `familyocr extract` copies those bytes verbatim as the archival original. Re-rasterizing the PDF page would resample data we already hold losslessly.
+Because the embedded stream is already a complete `.jp2` file, `foresight-ocr extract` copies those bytes verbatim as the archival original. Re-rasterizing the PDF page would resample data we already hold losslessly.
 
 ## Stream sizes
 
@@ -65,4 +65,4 @@ Recorded here because it drives every downstream design decision and is not deri
 - Columns read right-to-left; IDs run sequentially into the thousands across the whole volume.
 - Degradation present: cyan `富陽圖書館` watermark near page centre, bleed-through, mild skew, torn edges near p.200.
 
-The sequential IDs are the most useful property of this corpus: per band, the numbers must be monotonically increasing and gap-free across all 200 chart pages. That is a global checksum on OCR output requiring no manual ground truth — see `familyocr validate`.
+The sequential IDs are the most useful property of this corpus: per band, the numbers must be monotonically increasing and gap-free across all 200 chart pages. That is a global checksum on OCR output requiring no manual ground truth — see `foresight-ocr validate`.

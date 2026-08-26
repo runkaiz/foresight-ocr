@@ -15,8 +15,8 @@ import sqlite3
 
 import pytest
 
-from familyocr.persistence.db import connect, init_schema
-from familyocr.persistence import migrations
+from foresight_ocr.persistence import migrations
+from foresight_ocr.persistence.db import connect, init_schema
 
 DOC = "丙辰庶富教9"
 
@@ -73,7 +73,7 @@ def legacy(tmp_path):
     for variant in ("maxrgb", "original"):
         (artifacts / "crops" / DOC / variant).mkdir(parents=True)
 
-    conn = connect(artifacts / "familyocr.db")
+    conn = connect(artifacts / "foresight-ocr.db")
     conn.executescript(_OLD)
     conn.executescript(
         """
@@ -87,8 +87,10 @@ def legacy(tmp_path):
     conn.execute(
         "INSERT INTO documents VALUES (?,?,?,?,?,?)", (DOC, DOC, "p", "c", 1, "now")
     )
-    conn.execute("INSERT INTO pages VALUES (?,?,?,?,?,?,?,?)",
-                 (DOC, 58, 2300, 3025, None, None, None, None))
+    conn.execute(
+        "INSERT INTO pages VALUES (?,?,?,?,?,?,?,?)",
+        (DOC, 58, 2300, 3025, None, None, None, None),
+    )
 
     # init_schema fills in every table the old build shared with this one.
     init_schema(conn)
@@ -97,7 +99,8 @@ def legacy(tmp_path):
     conn.execute(
         "INSERT INTO processing_runs (id, document_id, stage, params_json, params_hash, "
         "compute_backend, pipeline_version, git_commit, started_at) "
-        "VALUES (1,?,'segment','{}','h','local','0','x','now')", (DOC,)
+        "VALUES (1,?,'segment','{}','h','local','0','x','now')",
+        (DOC,),
     )
     layout = conn.execute(
         "INSERT INTO page_layouts (document_id, page_index, run_id) VALUES (?,58,1)",
@@ -105,13 +108,15 @@ def legacy(tmp_path):
     ).lastrowid
     band = conn.execute(
         "INSERT INTO bands (page_layout_id, band_index, label, bbox_json) "
-        "VALUES (?,0,NULL,'[0,0,2300,1012.7]')", (layout,)
+        "VALUES (?,0,NULL,'[0,0,2300,1012.7]')",
+        (layout,),
     ).lastrowid
 
     for entry_index, bbox in _COLUMNS:
         entry = conn.execute(
             "INSERT INTO physical_entries (band_id, entry_index, bbox_json) "
-            "VALUES (?,?,?)", (band, entry_index, repr(bbox))
+            "VALUES (?,?,?)",
+            (band, entry_index, repr(bbox)),
         ).lastrowid
         for context, pad_frac in _CONTEXTS.items():
             crop_id = f"{DOC}_p0058_b0_e{entry_index:02d}_{context}"
@@ -126,7 +131,14 @@ def legacy(tmp_path):
                 "INSERT INTO source_regions (entry_id, document_id, page_index, role, "
                 "context, bbox_json, normalized_bbox_json, crop_id, crop_path) "
                 "VALUES (?,?,58,'entry',?,'[]',?,?,?)",
-                (entry, DOC, context, repr(_padded(bbox, pad_frac)), crop_id, str(path)),
+                (
+                    entry,
+                    DOC,
+                    context,
+                    repr(_padded(bbox, pad_frac)),
+                    crop_id,
+                    str(path),
+                ),
             )
 
     conn.execute(
@@ -142,7 +154,8 @@ def legacy(tmp_path):
     ).fetchall():
         conn.execute(
             "INSERT INTO ocr_candidates (source_region_id, ocr_run_id, transcription) "
-            "VALUES (?,1,'庶三百三十五允二百八十六次子')", (region["id"],)
+            "VALUES (?,1,'庶三百三十五允二百八十六次子')",
+            (region["id"],),
         )
     conn.commit()
 
@@ -165,9 +178,12 @@ def test_three_crop_widths_collapse_to_one_editable_region(legacy):
 
 
 def test_every_crop_row_finds_its_region(legacy):
-    assert legacy.execute(
-        "SELECT COUNT(*) FROM source_regions WHERE region_id IS NULL"
-    ).fetchone()[0] == 0
+    assert (
+        legacy.execute(
+            "SELECT COUNT(*) FROM source_regions WHERE region_id IS NULL"
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_regions_take_the_band_label_and_the_lattice_order(legacy):
@@ -232,7 +248,8 @@ def test_resegmenting_a_page_no_longer_destroys_its_transcriptions(legacy):
     before = legacy.execute("SELECT COUNT(*) FROM ocr_candidates").fetchone()[0]
     legacy.execute(
         "DELETE FROM physical_entries WHERE id IN (SELECT entry_id FROM source_regions "
-        "WHERE document_id=? AND page_index=58)", (DOC,)
+        "WHERE document_id=? AND page_index=58)",
+        (DOC,),
     )
     legacy.execute(
         "DELETE FROM source_regions WHERE document_id=? AND page_index=58", (DOC,)
@@ -246,10 +263,12 @@ def test_a_region_holding_answers_cannot_be_deleted(legacy):
 
 
 def test_migrating_twice_changes_nothing(legacy):
-    counts = lambda: tuple(
-        legacy.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        for t in ("regions", "region_crops", "ocr_candidates", "page_assets")
-    )
+    def counts():
+        return tuple(
+            legacy.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("regions", "region_crops", "ocr_candidates", "page_assets")
+        )
+
     before = counts()
     init_schema(legacy)
     assert counts() == before

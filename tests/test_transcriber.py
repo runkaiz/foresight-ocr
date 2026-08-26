@@ -1,21 +1,22 @@
 """The transcription workstation: fields, numerals, and the export.
 
-The property that matters is the round trip. A reviewer edits three fields, what
-gets stored is a line of the page, and reading that line back gives the same
-three fields. If that breaks, editing a field silently rewrites the record into
-something the parser no longer agrees with.
+The property that matters is the round trip. A reviewer edits the core fields
+and optional additional information, what gets stored is a line of the page,
+and reading that line back gives the same fields. If that breaks, editing a
+field silently rewrites the record into something the parser no longer agrees
+with.
 """
 
 import sqlite3
 
 import pytest
 
-from familyocr.context import set_profile
-from familyocr.document.profile import DocumentProfile
-from familyocr.ocr.fields import compose_entry, own_id_from_digits, parse_entry
-from familyocr.persistence.db import init_schema
-from familyocr.regions import store
-from familyocr.review.data import (
+from foresight_ocr.context import set_profile
+from foresight_ocr.document.profile import DocumentProfile
+from foresight_ocr.ocr.fields import compose_entry, own_id_from_digits, parse_entry
+from foresight_ocr.persistence.db import init_schema
+from foresight_ocr.regions import store
+from foresight_ocr.review.data import (
     export_document,
     page_entries,
     page_summary,
@@ -39,12 +40,16 @@ def _profile():
 # fields in, transcription out, fields back
 
 
-@pytest.mark.parametrize("own,parent,order", [
-    ("庶三百三十五", "允二百八十六", "次子"),
-    ("教千百九十三", "富三百四十九", "長子"),
-    ("庶四十", "允二十七", "子"),          # a bare 子 is an only son, and printed
-    ("富十九", "武功", "三子"),            # father named rather than numbered
-])
+@pytest.mark.parametrize(
+    "own,parent,order",
+    [
+        ("庶三百三十五", "允二百八十六", "次子"),
+        ("教千百九十三", "富三百四十九", "長子"),
+        ("庶四十", "允二十七", "子"),  # a bare 子 is an only son, and printed
+        ("富廿八", "庶四十一", "繼子"),  # status known; ordinal rank unknown
+        ("富十九", "武功", "三子"),  # father named rather than numbered
+    ],
+)
 def test_editing_fields_still_stores_a_line_of_the_page(own, parent, order):
     text = compose_entry(own, parent, order)
     back = parse_entry(text, own_label=own[0])
@@ -59,11 +64,23 @@ def test_a_missing_field_is_simply_absent():
     assert compose_entry(None, None, None) == ""
 
 
+def test_additional_information_round_trips_without_date_guessing():
+    extra = "生於光緒甲辰年二月初九日辰時"
+    text = compose_entry("教二千百十五", "富千八百七十七", "長子", extra)
+    assert text == "教二千百十五富千八百七十七長子\n" + extra
+
+    back = parse_entry(text, own_label="教")
+    assert back.own_id == "教二千百十五"
+    assert back.parent_id == "富千八百七十七"
+    assert back.order == "長子"
+    assert back.leftover == extra
+
+
 def test_composing_drops_what_the_page_does_not_print():
     """The library stamp reads as text; it is not the reviewer's to keep.
 
     The recognizer returns `富四十四 庚子 長子 IBRARY` on stamped pages. Once the
-    reviewer has put the three fields right, the stamp is simply not among them.
+    reviewer has put the core fields right, the stamp is simply not among them.
     """
     assert compose_entry("富四十四", "庶六十七", "次子") == "富四十四庶六十七次子"
 
@@ -79,7 +96,7 @@ def test_digits_become_the_numeral_the_book_prints():
 
 
 def test_a_typed_numeral_parses_back_to_the_same_number():
-    from familyocr.validation.numerals import parse_entry_id
+    from foresight_ocr.validation.numerals import parse_entry_id
 
     for n in (1, 7, 10, 19, 40, 100, 335, 999, 1193):
         text = own_id_from_digits("庶", str(n))
@@ -101,26 +118,33 @@ def _db():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_schema(conn)
-    conn.execute(
-        "INSERT INTO documents VALUES ('doc','t','p','c',1,'now')"
-    )
+    conn.execute("INSERT INTO documents VALUES ('doc','t','p','c',1,'now')")
     layout = conn.execute(
         "INSERT INTO page_layouts (document_id, page_index) VALUES ('doc', 58)"
     ).lastrowid
-    band = conn.execute(
+    conn.execute(
         "INSERT INTO bands (page_layout_id, band_index, label, bbox_json) "
-        "VALUES (?,0,'庶','[]')", (layout,)
-    ).lastrowid
+        "VALUES (?,0,'庶','[]')",
+        (layout,),
+    )
     conn.execute("INSERT INTO models VALUES ('m','b','1','b')")
     conn.execute(
         "INSERT INTO ocr_runs (id, run_id, model_id, input_variant, tag) "
         "VALUES (1,NULL,'m','maxrgb','t')"
     )
-    for entry, text in enumerate(["庶三百三十五允二百八十六次子", "庶\n允四\n六\n次子"]):
+    for entry, text in enumerate(
+        ["庶三百三十五允二百八十六次子", "庶\n允四\n六\n次子"]
+    ):
         bbox = [1000.0 - 300 * entry, 0.0, 1300.0 - 300 * entry, 900.0]
         region = store.create_region(
-            conn, "doc", 58, bbox,
-            band_label="庶", band_ordinal=0, reading_order=entry, entry_index=entry,
+            conn,
+            "doc",
+            58,
+            bbox,
+            band_label="庶",
+            band_ordinal=0,
+            reading_order=entry,
+            entry_index=entry,
         )
         conn.execute(
             "INSERT INTO region_crops (region_id, geometry_hash, context, pad_frac, "
@@ -130,10 +154,39 @@ def _db():
         )
         conn.execute(
             "INSERT INTO ocr_candidates (region_id, ocr_run_id, crop_key, "
-            "transcription) VALUES (?,1,?,?)", (region.id, f"c{entry}", text)
+            "transcription) VALUES (?,1,?,?)",
+            (region.id, f"c{entry}", text),
         )
     conn.commit()
     return conn
+
+
+def _add_export_entry(conn, page, label, band, entry, text):
+    """Add one current OCR-backed region without needing image fixtures."""
+    bbox = [1000.0 - 100 * entry, 0.0, 1090.0 - 100 * entry, 900.0]
+    region = store.create_region(
+        conn,
+        "doc",
+        page,
+        bbox,
+        band_label=label,
+        band_ordinal=band,
+        reading_order=entry,
+        entry_index=entry,
+    )
+    crop_key = f"{label}-{page}-{entry}"
+    conn.execute(
+        "INSERT INTO region_crops (region_id, geometry_hash, context, pad_frac, "
+        "variant, pixel_bbox_json, crop_key, path, created_at) "
+        "VALUES (?,?, 'tight', 0.0, 'maxrgb', '[]', ?, ?, 'now')",
+        (region.id, region.geometry_hash, crop_key, f"/crops/{crop_key}.png"),
+    )
+    conn.execute(
+        "INSERT INTO ocr_candidates (region_id, ocr_run_id, crop_key, "
+        "transcription) VALUES (?,1,?,?)",
+        (region.id, crop_key, text),
+    )
+    conn.commit()
 
 
 def test_the_reviewer_gets_the_fields_already_split():
@@ -145,28 +198,89 @@ def test_the_reviewer_gets_the_fields_already_split():
     assert first.own_label == "庶" and first.parent_label == "允"
 
 
-def test_an_entry_the_parser_cannot_place_still_shows_its_reading():
-    """The hard pages read every glyph and scramble the order across lines.
+def test_the_reviewer_can_edit_additional_information():
+    conn = _db()
+    extra = "生於光緒甲辰年二月初九日辰時"
+    conn.execute(
+        "UPDATE ocr_candidates SET transcription = ? WHERE crop_key = 'c0'",
+        (compose_entry("庶三百三十五", "允二百八十六", "次子", extra),),
+    )
+    conn.commit()
 
-    Nothing can be pre-filled, so what the reviewer needs is the reading itself
-    — the characters are all there, and retyping an entry whose pieces are on
-    screen is the waste this tool exists to remove.
-    """
+    entry = page_entries(conn, "doc", 58)[0]
+    assert entry.additional_info == extra
+    assert entry.leftover == extra
+
+
+def test_stepson_marker_stays_in_birth_order_in_review_and_export(tmp_path):
+    conn = _db()
+    conn.execute(
+        "UPDATE ocr_candidates SET transcription = ? WHERE crop_key = 'c0'",
+        ("庶三百三十五允二百八十六繼子",),
+    )
+    conn.commit()
+
+    entry = page_entries(conn, "doc", 58)[0]
+    assert entry.birth_order == "繼子"
+    assert entry.additional_info is None
+
+    out = tmp_path / "doc.tsv"
+    export_document(conn, "doc", out)
+    rows = [
+        line.split("\t")
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("#")
+    ]
+    row = next(row for row in rows if row[3] == "庶三百三十五")
+    assert row[5] == "繼子"
+    assert row[6] == ""
+
+
+def test_an_entry_split_across_title_page_subcolumns_is_prefilled():
+    """An explicit label line and numeral line are one printed id."""
     conn = _db()
     second = page_entries(conn, "doc", 58)[1]
-    assert second.own_id is None          # 庶 and 六 are on different lines
+    assert second.own_id == "庶六"
+    assert second.parent == "允四"
+    assert second.birth_order == "次子"
     assert second.machine == "庶\n允四\n六\n次子"
-    assert "庶" in (second.leftover or "")
+    assert second.leftover is None
+
+
+def test_existing_watermark_text_is_ignored_without_rewriting_the_candidate(tmp_path):
+    conn = _db()
+    raw = "庶三百三十五允二百八十六次子 FUYANG LIBRARY"
+    conn.execute(
+        "UPDATE ocr_candidates SET transcription = ? WHERE crop_key = 'c0'",
+        (raw,),
+    )
+    conn.commit()
+
+    entry = page_entries(conn, "doc", 58)[0]
+    assert entry.machine == "庶三百三十五允二百八十六次子"
+    assert entry.own_id == "庶三百三十五"
+    assert (
+        conn.execute(
+            "SELECT transcription FROM ocr_candidates WHERE crop_key = 'c0'"
+        ).fetchone()[0]
+        == raw
+    )
+
+    out = tmp_path / "export.tsv"
+    export_document(conn, "doc", out, tag="t")
+    body = out.read_text(encoding="utf-8")
+    assert "FUYANG" not in body and "LIBRARY" not in body
 
 
 def test_a_correction_replaces_the_reading_for_that_entry_only():
     conn = _db()
-    save_correction(conn, "doc", 58, "庶", 1,
-                    transcription=compose_entry("庶六", "允四", "次子"))
+    save_correction(
+        conn, "doc", 58, "庶", 1, transcription=compose_entry("庶六", "允四", "次子")
+    )
     first, second = page_entries(conn, "doc", 58)
     assert second.human == "庶六允四次子"
     assert second.own_id == "庶六" and second.parent == "允四"
-    assert second.machine == "庶\n允四\n六\n次子"   # untouched
+    assert second.machine == "庶\n允四\n六\n次子"  # untouched
     assert first.human is None
 
 
@@ -178,7 +292,13 @@ def test_the_page_announces_how_much_is_disputed(tmp_path):
     )
     conn.commit()
     assert page_summary(conn, "doc") == [
-        {"page": 58, "entries": 2, "flagged": 1, "reviewed": 0}
+        {
+            "page": 58,
+            "entries": 2,
+            "flagged": 1,
+            "reviewed": 0,
+            "ignored": False,
+        }
     ]
     entry = page_entries(conn, "doc", 58)[1]
     assert entry.flagged is True
@@ -189,20 +309,86 @@ def test_the_page_announces_how_much_is_disputed(tmp_path):
 
 def test_the_export_is_the_whole_document_not_only_the_corrections(tmp_path):
     conn = _db()
-    save_correction(conn, "doc", 58, "庶", 1,
-                    transcription=compose_entry("庶六", "允四", "次子"))
+    save_correction(
+        conn, "doc", 58, "庶", 1, transcription=compose_entry("庶六", "允四", "次子")
+    )
     out = tmp_path / "doc.tsv"
     counts = export_document(conn, "doc", out)
 
     assert counts["entries"] == 2
     assert counts["human"] == 1 and counts["machine"] == 1
-    body = [l for l in out.read_text(encoding="utf-8").splitlines()
-            if not l.startswith("#")]
+    body = [
+        line
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("#")
+    ]
     assert len(body) == 2
-    assert body[0].split("\t")[-1] == "machine"
-    assert body[1].split("\t")[-1] == "human"
+    by_id = {line.split("\t")[3]: line.split("\t") for line in body}
+    assert by_id["庶三百三十五"][-1] == "machine"
+    assert by_id["庶六"][-1] == "human"
     # Fields are columns of their own, so the output is usable without reparsing.
-    assert body[1].split("\t")[3:6] == ["庶六", "允四", "次子"]
+    assert by_id["庶六"][3:6] == ["庶六", "允四", "次子"]
+
+
+def test_the_export_groups_generations_and_orders_their_numbered_entries(tmp_path):
+    conn = _db()
+    # Deliberately put a blank 庶 entry on an earlier page, 富一 in the middle,
+    # and 庶一 on a later page. Page order would interleave the generations and
+    # lead with the blank row; the export contract is 庶一 ... 庶末, then 富一.
+    _add_export_entry(conn, 57, "庶", 0, 0, "")
+    _add_export_entry(conn, 58, "富", 1, 0, "富一庶一長子")
+    _add_export_entry(conn, 59, "庶", 0, 0, "庶一允一長子")
+
+    # A long-lived process may have activated another document. Production
+    # callers pass a snapshot of this document's labels, so that global state
+    # cannot change an export already in progress.
+    set_profile(
+        DocumentProfile(
+            document_id="other",
+            band_labels=["富", "教", "庶"],
+            generation_chain=["富", "教", "庶"],
+            bands_per_page=3,
+        )
+    )
+
+    out = tmp_path / "doc.tsv"
+    export_document(conn, "doc", out, generation_labels=PROFILE.band_labels)
+    data = [
+        line.split("\t")
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("#")
+    ]
+
+    assert [row[1] for row in data] == ["庶", "庶", "庶", "庶", "富"]
+    assert [row[3] for row in data] == [
+        "庶一",
+        "庶六",
+        "庶三百三十五",
+        "",
+        "富一",
+    ]
+    # Page stays as provenance; it is no longer the primary sort key.
+    assert [row[0] for row in data] == ["59", "58", "58", "57", "58"]
+
+
+def test_the_export_has_an_additional_information_column(tmp_path):
+    conn = _db()
+    extra = "生於光緒甲辰年二月初九日辰時"
+    save_correction(
+        conn,
+        "doc",
+        58,
+        "庶",
+        0,
+        transcription=compose_entry("庶三百三十五", "允二百八十六", "次子", extra),
+    )
+    out = tmp_path / "doc.tsv"
+    export_document(conn, "doc", out)
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert "\tadditional_info\t" in lines[2]
+    rows = [line.split("\t") for line in lines if not line.startswith("#")]
+    assert next(row for row in rows if row[3] == "庶三百三十五")[6] == extra
 
 
 def test_an_unreadable_entry_is_exported_as_unreadable_not_omitted(tmp_path):
@@ -212,7 +398,10 @@ def test_an_unreadable_entry_is_exported_as_unreadable_not_omitted(tmp_path):
     out = tmp_path / "doc.tsv"
     counts = export_document(conn, "doc", out)
     assert counts["entries"] == 2 and counts["unreadable"] == 1
-    body = [l for l in out.read_text(encoding="utf-8").splitlines()
-            if not l.startswith("#")]
+    body = [
+        line
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("#")
+    ]
     assert len(body) == 2
-    assert body[0].split("\t")[-1] == "unreadable"
+    assert [line.split("\t")[-1] for line in body].count("unreadable") == 1

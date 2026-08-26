@@ -13,20 +13,32 @@ column, with the readings and the correction that were made against it.
 
 import json
 import sqlite3
+from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 
-from familyocr.regions import store
-from familyocr.regions.recut import CombInputs, Band, apply_comb, plan_comb
-from familyocr.persistence.db import init_schema
-from familyocr.segmentation.entries import entry_boundaries, fit_comb
-
+from foresight_ocr.persistence.db import init_schema
+from foresight_ocr.project import Project
+from foresight_ocr.regions import store
+from foresight_ocr.regions.crops import ensure_crop
+from foresight_ocr.regions.recut import (
+    Band,
+    CombInputs,
+    PageNotSegmentable,
+    apply_comb,
+    plan_comb,
+)
+from foresight_ocr.review.data import page_entries
+from foresight_ocr.segmentation.entries import entry_boundaries
 
 # --------------------------------------------------------------------------
 # the lattice itself
 
 
 PITCH = 377.0
+SMALL_ADJUSTMENT = -45.0
 # Page 3's own gutters. Ten of them, where a clean page of this book detects
 # thirteen; three of the ten belong to the sub-columns inside an entry.
 P3_GUTTERS = [46.0, 181.0, 364.0, 668.0, 1052.0, 1429.0, 1806.0, 2060.0, 2178.0, 2272.0]
@@ -34,7 +46,7 @@ P3_GUTTERS = [46.0, 181.0, 364.0, 668.0, 1052.0, 1429.0, 1806.0, 2060.0, 2178.0,
 
 def _spacing(bounds):
     edges = sorted(bounds)
-    return [round(b - a) for a, b in zip(edges, edges[1:])]
+    return [round(b - a) for a, b in zip(edges, edges[1:], strict=False)]
 
 
 def test_the_fitted_phase_is_the_one_that_was_wrong():
@@ -44,8 +56,55 @@ def test_the_fitted_phase_is_the_one_that_was_wrong():
 
 
 def test_shifting_the_phase_makes_the_columns_even():
-    bounds, _ = entry_boundaries(0.0, 2295.5, PITCH, P3_GUTTERS, phase_offset=-45.0)
-    assert _spacing(bounds) == [377, 384, 377, 377, 372, 375]
+    bounds, _ = entry_boundaries(
+        0.0, 2295.5, PITCH, P3_GUTTERS, phase_offset=-PITCH / 2
+    )
+    # The corrected gutters put the right-edge own-id fragment at x=2060 and
+    # the preceding page's continuation at the left edge below x=181.
+    assert bounds == pytest.approx(
+        [2409.5, 2060.0, 1655.5, 1278.5, 901.5, 524.5, 181.0]
+    )
+
+
+def test_verified_base_phase_is_applied_before_reviewer_adjustment():
+    inputs = _inputs()
+    inputs = CombInputs(**{**inputs.__dict__, "base_phase_fraction": -0.5})
+    plan = plan_comb(inputs)
+    assert plan.phase_adjustment == 0.0
+    assert plan.base_phase_offset == pytest.approx(-PITCH / 2)
+    assert plan.boundaries == pytest.approx(
+        [2409.5, 2060.0, 1655.5, 1278.5, 901.5, 524.5, 181.0]
+    )
+
+
+def test_corpus_anchor_is_part_of_the_default_recut_plan():
+    gutters = [
+        53.0,
+        186.0,
+        385.5,
+        555.5,
+        760.5,
+        936.0,
+        1143.5,
+        1321.0,
+        1528.5,
+        1708.0,
+        1912.5,
+        2101.5,
+    ]
+    inputs = _inputs(pitch=382.0, gutters=gutters)
+    inputs = CombInputs(
+        **{
+            **inputs.__dict__,
+            "text_right": 2298.0,
+            "base_phase_fraction": -0.5,
+            "phase_anchor_x": 2096.5,
+        }
+    )
+    plan = plan_comb(inputs)
+    assert plan.phase_adjustment == 0.0
+    assert plan.base_phase_offset == pytest.approx(0.0)
+    assert plan.boundaries[1] == pytest.approx(2101.5)
 
 
 def test_the_extent_decides_how_many_columns_there_are():
@@ -56,13 +115,15 @@ def test_the_extent_decides_how_many_columns_there_are():
     edge. On page 3 that sliver read `一` and `民國內辰重修` — the printer's
     imprint, cut and filed as two people.
     """
-    wide, _ = entry_boundaries(0.0, 2295.5, PITCH, P3_GUTTERS, phase_offset=-45.0)
-    trimmed, _ = entry_boundaries(-100.0, 2200.0, PITCH, P3_GUTTERS, phase_offset=-45.0)
-    assert max(wide) > 2500 and len(wide) - 1 == 6
-    assert max(trimmed) == 2178.0 and len(trimmed) - 1 == 6
-    # The column the trim removes at the right is replaced by the real one at
-    # the left that the untrimmed lattice ran out of room for.
-    assert min(trimmed) < 0 < min(wide)
+    wide, _ = entry_boundaries(0.0, 2295.5, PITCH, P3_GUTTERS, phase_offset=-PITCH / 2)
+    trimmed, _ = entry_boundaries(
+        -100.0, 2200.0, PITCH, P3_GUTTERS, phase_offset=-PITCH / 2
+    )
+    assert max(wide) > 2300 and len(wide) - 1 == 6
+    assert wide == trimmed
+    # Both edge intervals are deliberately partial: the right one belongs to
+    # this page, while the left one is carried into the following scan.
+    assert min(wide) == 181.0
 
 
 def test_snapping_can_be_switched_off():
@@ -70,7 +131,7 @@ def test_snapping_can_be_switched_off():
     snapped, flags = entry_boundaries(0.0, 2295.5, PITCH, P3_GUTTERS)
     plain, none = entry_boundaries(0.0, 2295.5, PITCH, P3_GUTTERS, snap=False)
     assert any(flags) and not any(none)
-    assert len(set(_spacing(plain))) == 1        # a perfectly regular comb
+    assert len(set(_spacing(plain))) == 1  # a perfectly regular comb
 
 
 def test_a_phase_of_zero_changes_nothing():
@@ -79,18 +140,55 @@ def test_a_phase_of_zero_changes_nothing():
     assert a == b
 
 
+def test_one_boundary_can_be_overridden_without_moving_the_rest():
+    inputs = _inputs()
+    base = plan_comb(inputs, snap=False)
+    index = 2
+    moved_x = base.boundaries[index] - 21.0
+
+    adjusted = plan_comb(inputs, snap=False, boundary_overrides={index: moved_x})
+
+    assert adjusted.boundaries[index] == moved_x
+    assert adjusted.manual[index] is True
+    assert adjusted.snapped[index] is False
+    assert adjusted.boundaries[:index] == base.boundaries[:index]
+    assert adjusted.boundaries[index + 1 :] == base.boundaries[index + 1 :]
+    assert adjusted.entries_per_band == base.entries_per_band
+    # One division is shared by the two columns on either side of it.
+    assert adjusted.proposals[index - 1].bbox[0] == moved_x
+    assert adjusted.proposals[index].bbox[2] == moved_x
+
+
+def test_manual_boundaries_cannot_cross_each_other():
+    inputs = _inputs()
+    base = plan_comb(inputs, snap=False)
+
+    with pytest.raises(PageNotSegmentable, match="right-to-left order"):
+        plan_comb(
+            inputs,
+            snap=False,
+            boundary_overrides={1: base.boundaries[2] - 1.0},
+        )
+
+
 # --------------------------------------------------------------------------
 # applying it
 
 
 def _inputs(pitch=PITCH, gutters=None):
     return CombInputs(
-        document_id="doc", page_index=3, pitch=pitch,
-        text_left=0.0, text_right=2295.5,
+        document_id="doc",
+        page_index=3,
+        pitch=pitch,
+        text_left=0.0,
+        text_right=2295.5,
         gutters=list(P3_GUTTERS if gutters is None else gutters),
-        page_width=2300, page_height=3025,
+        page_width=2300,
+        page_height=3025,
         bands=[Band(0, "庶", 0.0, 1000.0)],
-        pitch_confidence=0.47, used_corpus_pitch=False, corpus_pitch=378.0,
+        pitch_confidence=0.47,
+        used_corpus_pitch=False,
+        corpus_pitch=378.0,
     )
 
 
@@ -106,11 +204,18 @@ def _seed(conn, plan):
     """Put the page's regions where the given plan says, as segment would."""
     out = []
     for i, proposal in enumerate(plan.proposals):
-        out.append(store.create_region(
-            conn, "doc", 3, proposal.bbox,
-            band_label=proposal.band_label, band_ordinal=proposal.band_ordinal,
-            reading_order=i, entry_index=i,
-        ))
+        out.append(
+            store.create_region(
+                conn,
+                "doc",
+                3,
+                proposal.bbox,
+                band_label=proposal.band_label,
+                band_ordinal=proposal.band_ordinal,
+                reading_order=i,
+                entry_index=i,
+            )
+        )
     conn.commit()
     return out
 
@@ -120,8 +225,15 @@ def test_a_shift_moves_the_columns_and_keeps_their_identity():
     conn = _db()
     before = {r.region_uid: list(r.bbox) for r in _seed(conn, plan_comb(inputs))}
 
-    report = apply_comb(conn, None, plan_comb(inputs, phase_offset=-45.0),
-                        inputs, reocr=False)
+    # A smaller reviewer adjustment exercises identity preservation; the
+    # document's verified half-pitch base is tested separately above.
+    report = apply_comb(
+        conn,
+        None,
+        plan_comb(inputs, phase_offset=SMALL_ADJUSTMENT),
+        inputs,
+        reocr=False,
+    )
     after = {r.region_uid: r for r in store.for_page(conn, "doc", 3)}
 
     # The shift is smaller than half a column, so every column that survives is
@@ -135,8 +247,79 @@ def test_a_shift_moves_the_columns_and_keeps_their_identity():
             # A person said where this column is; a later automatic pass has to
             # ask before moving it back.
             assert region.state == "adjusted"
-    assert [r.reading_order for r in store.for_page(conn, "doc", 3)] == \
-        list(range(len(after)))
+    assert [r.reading_order for r in store.for_page(conn, "doc", 3)] == list(
+        range(len(after))
+    )
+
+
+def test_shift_without_reocr_materializes_crops_for_the_applied_geometry(tmp_path):
+    inputs = CombInputs(
+        document_id="doc",
+        page_index=3,
+        pitch=40.0,
+        text_left=0.0,
+        text_right=220.0,
+        gutters=[],
+        page_width=240,
+        page_height=120,
+        bands=[Band(0, "庶", 0.0, 100.0)],
+        pitch_confidence=1.0,
+        used_corpus_pitch=False,
+        corpus_pitch=40.0,
+    )
+    project = Project(tmp_path)
+    normalized = project.pages_dir("doc", "normalized")
+    normalized.mkdir(parents=True)
+    image = np.full((120, 240, 3), 240, dtype=np.uint8)
+    image[:, 20:225] = 30
+    assert cv2.imwrite(str(normalized / "p0003.png"), image)
+
+    conn = _db()
+    conn.execute(
+        "INSERT INTO pages (document_id, page_index, width, height) "
+        "VALUES ('doc',3,240,120)"
+    )
+    conn.commit()
+    seeded = _seed(conn, plan_comb(inputs, snap=False))
+    for region in seeded:
+        ensure_crop(conn, project, region, variant="original")
+    conn.commit()
+    stale_count = conn.execute("SELECT COUNT(*) n FROM region_crops").fetchone()["n"]
+    assert stale_count == len(seeded)
+
+    report = apply_comb(
+        conn,
+        project,
+        plan_comb(inputs, phase_offset=5.0, snap=False),
+        inputs,
+        reocr=False,
+        variant="original",
+    )
+
+    live = store.for_page(conn, "doc", 3)
+    assert report.errors == []
+    assert report.moved == len(live) > 0
+    assert report.crops_cut == len(live)
+    assert conn.execute("SELECT COUNT(*) n FROM ocr_candidates").fetchone()["n"] == 0
+
+    # Old crop evidence remains, but every moved region now has a crop whose
+    # geometry hash and displayed pixel box match the accepted lattice.
+    assert conn.execute("SELECT COUNT(*) n FROM region_crops").fetchone()[
+        "n"
+    ] == stale_count + len(live)
+    displayed = {
+        entry.entry_index: entry.crop_bbox for entry in page_entries(conn, "doc", 3)
+    }
+    for region in live:
+        row = conn.execute(
+            "SELECT path, pixel_bbox_json FROM region_crops "
+            "WHERE region_id = ? AND geometry_hash = ? AND context = 'tight'",
+            (region.id, region.geometry_hash),
+        ).fetchone()
+        assert row is not None
+        assert displayed[region.reading_order] == [int(v) for v in region.bbox]
+        assert json.loads(row["pixel_bbox_json"]) == displayed[region.reading_order]
+        assert Path(row["path"]).exists()
 
 
 def test_re_cutting_at_the_same_phase_is_a_no_op():
@@ -162,7 +345,9 @@ def test_re_cutting_at_the_same_phase_is_a_no_op():
     # Looking is not editing: a reviewer who opens the control and accepts what
     # is already there keeps the page's findings.
     assert report.findings_cleared == 0
-    assert conn.execute("SELECT COUNT(*) n FROM validation_findings").fetchone()["n"] == 1
+    assert (
+        conn.execute("SELECT COUNT(*) n FROM validation_findings").fetchone()["n"] == 1
+    )
 
 
 def test_the_whole_page_takes_the_lattice_the_person_chose():
@@ -176,9 +361,14 @@ def test_the_whole_page_takes_the_lattice_the_person_chose():
     inputs = _inputs()
     conn = _db()
     _seed(conn, plan_comb(inputs))
-    report = apply_comb(conn, None, plan_comb(inputs, phase_offset=-45.0),
-                        inputs, reocr=False)
-    assert report.unchanged and report.moved      # both kinds are present
+    report = apply_comb(
+        conn,
+        None,
+        plan_comb(inputs, phase_offset=SMALL_ADJUSTMENT),
+        inputs,
+        reocr=False,
+    )
+    assert report.unchanged and report.moved  # both kinds are present
     assert {r.state for r in store.for_page(conn, "doc", 3)} == {"adjusted"}
 
 
@@ -201,16 +391,25 @@ def test_a_correction_follows_its_column_to_the_new_position():
     )
     conn.commit()
 
-    apply_comb(conn, None, plan_comb(inputs, phase_offset=-45.0, text_left=-100.0,
-                                     text_right=2200.0), inputs, reocr=False)
+    apply_comb(
+        conn,
+        None,
+        plan_comb(
+            inputs, phase_offset=SMALL_ADJUSTMENT, text_left=-100.0, text_right=2200.0
+        ),
+        inputs,
+        reocr=False,
+    )
 
     moved = store.get(conn, marked.region_uid)
     row = conn.execute(
         "SELECT band_label, entry_index, transcription FROM human_corrections"
     ).fetchone()
     assert row["transcription"] == "庶七允五長子"
-    assert (row["band_label"], row["entry_index"]) == (moved.band_label,
-                                                       moved.reading_order)
+    assert (row["band_label"], row["entry_index"]) == (
+        moved.band_label,
+        moved.reading_order,
+    )
 
 
 def test_the_pages_findings_go_with_the_positions_they_described():
@@ -226,11 +425,16 @@ def test_the_pages_findings_go_with_the_positions_they_described():
         "page_index, entry_index) VALUES ('doc','庶','gap',4,1)"
     )
     conn.commit()
-    report = apply_comb(conn, None, plan_comb(inputs, phase_offset=-45.0),
-                        inputs, reocr=False)
+    report = apply_comb(
+        conn,
+        None,
+        plan_comb(inputs, phase_offset=SMALL_ADJUSTMENT),
+        inputs,
+        reocr=False,
+    )
     assert report.findings_cleared == 1
     left = conn.execute("SELECT page_index FROM validation_findings").fetchall()
-    assert [r["page_index"] for r in left] == [4]    # the next page is untouched
+    assert [r["page_index"] for r in left] == [4]  # the next page is untouched
 
 
 def test_a_withdrawn_column_keeps_what_was_read_from_it():
@@ -244,20 +448,32 @@ def test_a_withdrawn_column_keeps_what_was_read_from_it():
     conn = _db()
     seeded = _seed(conn, plan_comb(inputs))
     conn.execute("INSERT INTO models VALUES ('m','b','1','b')")
-    conn.execute("INSERT INTO ocr_runs (id, run_id, model_id, input_variant, tag) "
-                 "VALUES (1,NULL,'m','maxrgb','t')")
+    conn.execute(
+        "INSERT INTO ocr_runs (id, run_id, model_id, input_variant, tag) "
+        "VALUES (1,NULL,'m','maxrgb','t')"
+    )
     conn.execute(
         "INSERT INTO ocr_candidates (region_id, ocr_run_id, transcription) "
-        "VALUES (?,1,'一')", (seeded[0].id,)
+        "VALUES (?,1,'一')",
+        (seeded[0].id,),
     )
     conn.commit()
 
-    apply_comb(conn, None, plan_comb(inputs, phase_offset=-45.0, text_left=-100.0,
-                                     text_right=2200.0), inputs, reocr=False)
-    assert conn.execute(
-        "SELECT COUNT(*) n FROM ocr_candidates WHERE region_id = ?",
-        (seeded[0].id,)
-    ).fetchone()["n"] == 1
+    apply_comb(
+        conn,
+        None,
+        plan_comb(
+            inputs, phase_offset=SMALL_ADJUSTMENT, text_left=-100.0, text_right=2200.0
+        ),
+        inputs,
+        reocr=False,
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) n FROM ocr_candidates WHERE region_id = ?", (seeded[0].id,)
+        ).fetchone()["n"]
+        == 1
+    )
 
 
 def test_the_detector_does_not_re_insert_a_column_the_reviewer_removed():
@@ -269,13 +485,20 @@ def test_the_detector_does_not_re_insert_a_column_the_reviewer_removed():
     undone by the next `segment`, and the reviewer deletes the same column once
     per run for the rest of the volume.
     """
-    from familyocr.regions.reconcile import reconcile_page
+    from foresight_ocr.regions.reconcile import reconcile_page
 
     inputs = _inputs()
     conn = _db()
     _seed(conn, plan_comb(inputs))
-    apply_comb(conn, None, plan_comb(inputs, phase_offset=-45.0, text_left=-100.0,
-                                     text_right=2200.0), inputs, reocr=False)
+    apply_comb(
+        conn,
+        None,
+        plan_comb(
+            inputs, phase_offset=SMALL_ADJUSTMENT, text_left=-100.0, text_right=2200.0
+        ),
+        inputs,
+        reocr=False,
+    )
     live = len(store.for_page(conn, "doc", 3))
 
     # The pipeline runs again and proposes exactly what it proposed before.

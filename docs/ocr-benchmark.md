@@ -1,6 +1,6 @@
 # OCR benchmark — `丙辰庶富教1`
 
-Generated 2026-08-16T13:44:41+00:00 by `familyocr report-ocr`. Numbers come from the artifacts of the last `benchmark` or `rescore` run.
+Generated 2026-08-16T13:44:41+00:00 by `foresight-ocr report-ocr`. Numbers come from the artifacts of the last `benchmark` or `rescore` run.
 
 ## What is being measured
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from familyocr.cli.main import _core_run
+from foresight_ocr.cli.main import _core_run
 
 
 def test_a_single_stray_does_not_stretch_the_run():

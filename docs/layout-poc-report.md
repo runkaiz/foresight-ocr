@@ -1,6 +1,6 @@
 # Layout POC report — `丙辰庶富教1`
 
-Generated 2026-08-16T10:16:42+00:00 by `familyocr report`. Every number below comes from the artifacts of the most recent pipeline run.
+Generated 2026-08-16T10:16:42+00:00 by `foresight-ocr report`. Every number below comes from the artifacts of the most recent pipeline run.
 
 ## Corpus characteristics
 
@@ -109,7 +109,7 @@ Run so far: **360 entries** cut from 20 pages (×3 context widths). Entry counts
 
 ### Sequence check, exercised on real data
 
-The six 庶-band entries of page 58 were transcribed by hand from their crops and run through `familyocr validate`:
+The six 庶-band entries of page 58 were transcribed by hand from their crops and run through `foresight-ocr validate`:
 
 ```
 band 庶 | 6 entries | 6 parsed (100%) | range 335–340 | clean transitions 100.00% | 0 findings
@@ -119,7 +119,7 @@ They read 三百三十五 … 三百四十 — consecutive, exactly as the seque
 
 ## Recommended next experiment
 
-Build the OCR benchmark (Deliverable 2), and exploit the property that makes this corpus unusual: **entry IDs are sequential**. Per band, a correct transcription must be a complete, strictly increasing integer run across all 200 chart pages, so `familyocr validate` measures error rate over roughly 3,600 entries with no manual ground truth and points at the exact crop that broke.
+Build the OCR benchmark (Deliverable 2), and exploit the property that makes this corpus unusual: **entry IDs are sequential**. Per band, a correct transcription must be a complete, strictly increasing integer run across all 200 chart pages, so `foresight-ocr validate` measures error rate over roughly 3,600 entries with no manual ground truth and points at the exact crop that broke.
 
 Concretely, in order:
 

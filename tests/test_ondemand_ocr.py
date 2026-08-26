@@ -11,18 +11,18 @@ enforced.
 """
 
 import json
-import sqlite3
 
 import cv2
 import numpy as np
 import pytest
 
-from familyocr.ocr import ondemand
-from familyocr.ocr.base import OCRResult, register_backend
-from familyocr.persistence.db import connect
-from familyocr.project import Project
-from familyocr.regions import store as region_store
-from familyocr.regions.model import geometry_hash, new_region_uid
+from foresight_ocr.ocr import ondemand
+from foresight_ocr.ocr.base import OCRResult, register_backend
+from foresight_ocr.persistence.db import connect, init_schema
+from foresight_ocr.project import Project
+from foresight_ocr.regions import store as region_store
+from foresight_ocr.regions.crops import ensure_crop, ensure_cross_page_previews
+from foresight_ocr.regions.model import geometry_hash, new_region_uid
 
 DOC = "丙辰庶富教9"
 
@@ -70,11 +70,11 @@ def page(tmp_path):
     normalized = project.pages_dir(DOC, "normalized")
     normalized.mkdir(parents=True)
     image = np.full((1200, 2300, 3), 240, dtype=np.uint8)
-    image[100:900, 1600:1900] = 30            # something for a crop to contain
+    image[100:900, 1600:1900] = 30  # something for a crop to contain
     cv2.imwrite(str(normalized / "p0058.png"), image)
 
     conn = connect(project.db_path)
-    from familyocr.persistence.db import init_schema
+    from foresight_ocr.persistence.db import init_schema
 
     init_schema(conn)
     conn.execute(
@@ -84,22 +84,31 @@ def page(tmp_path):
         "INSERT INTO pages (document_id, page_index, width, height) VALUES (?,58,?,?)",
         (DOC, 2300, 1200),
     )
-    for order, box in enumerate([[1600.0, 0.0, 1900.0, 1000.0],
-                                 [1200.0, 0.0, 1600.0, 1000.0]]):
+    for order, box in enumerate(
+        [[1600.0, 0.0, 1900.0, 1000.0], [1200.0, 0.0, 1600.0, 1000.0]]
+    ):
         conn.execute(
             "INSERT INTO regions (region_uid, document_id, page_index, bbox_json, "
             "geometry_hash, band_label, band_ordinal, reading_order, entry_index, "
             "created_at, updated_at) VALUES (?,?,58,?,?,'庶',0,?,?, 'now','now')",
-            (f"uid{order}" + new_region_uid()[:28], DOC, json.dumps(box),
-             geometry_hash(DOC, 58, box), order, order),
+            (
+                f"uid{order}" + new_region_uid()[:28],
+                DOC,
+                json.dumps(box),
+                geometry_hash(DOC, 58, box),
+                order,
+                order,
+            ),
         )
     conn.commit()
     return project, conn
 
 
 def _uids(conn):
-    return [r["region_uid"] for r in conn.execute(
-        "SELECT region_uid FROM regions ORDER BY reading_order")]
+    return [
+        r["region_uid"]
+        for r in conn.execute("SELECT region_uid FROM regions ORDER BY reading_order")
+    ]
 
 
 def _read(project, conn, uids, **kw):
@@ -132,8 +141,248 @@ def test_reading_again_without_changing_anything_calls_no_model(page):
     FakeRecognizer.calls = []
     answers = _read(project, conn, [uid])
     assert answers[0].reused is True
-    assert FakeRecognizer.calls == []      # the recognizer was never started
-    assert _counts(conn) == before         # and nothing new was written
+    assert FakeRecognizer.calls == []  # the recognizer was never started
+    assert _counts(conn) == before  # and nothing new was written
+
+
+def test_cached_pixels_follow_a_replacement_region_after_the_owner_moves(page):
+    project, conn = page
+    original = region_store.get(conn, _uids(conn)[0])
+    assert original is not None
+    first = _read(project, conn, [original.region_uid])[0]
+
+    region_store.reposition(conn, original, [1900.0, 0.0, 2200.0, 1000.0])
+    replacement = region_store.create_region(
+        conn,
+        DOC,
+        58,
+        original.bbox,
+        band_label="教",
+        band_ordinal=2,
+        reading_order=1,
+        entry_index=1,
+    )
+    FakeRecognizer.calls = []
+
+    reused = _read(project, conn, [replacement.region_uid])[0]
+
+    assert reused.reused is True
+    assert reused.transcription == first.transcription
+    assert FakeRecognizer.calls == []
+    assert _counts(conn) == (1, 1)
+    assert (
+        conn.execute("SELECT region_id FROM region_crops").fetchone()["region_id"]
+        == replacement.id
+    )
+    assert (
+        conn.execute("SELECT region_id FROM ocr_candidates").fetchone()["region_id"]
+        == replacement.id
+    )
+
+
+def test_complete_crop_file_is_recovered_after_database_rollback(page, monkeypatch):
+    project, conn = page
+    region = region_store.get(conn, _uids(conn)[0])
+    first = ensure_crop(conn, project, region, variant="maxrgb")
+    conn.commit()
+    conn.execute("DELETE FROM region_crops WHERE crop_key = ?", (first.crop_key,))
+    conn.commit()
+
+    def should_not_rebuild(_page, _variant):
+        raise AssertionError("the normalized page variant was rebuilt")
+
+    monkeypatch.setattr("foresight_ocr.regions.crops.build_variant", should_not_rebuild)
+    recovered = ensure_crop(conn, project, region, variant="maxrgb")
+
+    assert recovered.reused is True
+    assert recovered.crop_key == first.crop_key
+    assert conn.execute(
+        "SELECT path FROM region_crops WHERE crop_key = ?", (first.crop_key,)
+    ).fetchone()["path"] == str(first.path)
+
+
+def test_right_edge_entry_stitches_preceding_pages_left_fragment(tmp_path):
+    project = Project(tmp_path)
+    normalized = project.pages_dir(DOC, "normalized")
+    normalized.mkdir(parents=True)
+    previous = np.full((100, 100, 3), 240, dtype=np.uint8)
+    current = np.full((100, 100, 3), 240, dtype=np.uint8)
+    previous[:, :20] = 40  # parent/order continuation on the prior scan
+    current[:, 70:] = 80  # own-id fragment on the current scan
+    cv2.imwrite(str(normalized / "p0002.png"), previous)
+    cv2.imwrite(str(normalized / "p0003.png"), current)
+
+    conn = connect(project.db_path)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO documents VALUES (?,?,?,?,?,?)", (DOC, DOC, "p", "c", 3, "now")
+    )
+    conn.executemany(
+        "INSERT INTO pages (document_id, page_index, width, height) VALUES (?,?,100,100)",
+        [(DOC, 2), (DOC, 3)],
+    )
+    prior = region_store.create_region(
+        conn,
+        DOC,
+        2,
+        [20.0, 0.0, 70.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=3,
+        entry_index=3,
+    )
+    region_store.create_region(
+        conn,
+        DOC,
+        3,
+        [70.0, 0.0, 100.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=0,
+        entry_index=0,
+    )
+    conn.commit()
+
+    rendered = ensure_cross_page_previews(conn, project, DOC, 3, 100, variant="maxrgb")[
+        0
+    ]
+    pixels = cv2.imread(str(rendered.path), cv2.IMREAD_GRAYSCALE)
+
+    assert prior.id is not None
+    assert pixels.shape == (100, 50)
+    assert np.all(pixels[:, :30] == 80)
+    assert np.all(pixels[:, 30:] == 40)
+
+
+def test_inset_rightmost_entry_still_stitches_preceding_fragment(tmp_path):
+    project = Project(tmp_path)
+    normalized = project.pages_dir(DOC, "normalized")
+    normalized.mkdir(parents=True)
+    previous = np.full((100, 100, 3), 240, dtype=np.uint8)
+    current = np.full((100, 100, 3), 240, dtype=np.uint8)
+    previous[:, :20] = 40
+    current[:, 50:70] = 120  # extra left sub-column in the full current box
+    current[:, 70:90] = 80  # right-hand piece that completes the seam entry
+    cv2.imwrite(str(normalized / "p0003.png"), previous)
+    cv2.imwrite(str(normalized / "p0004.png"), current)
+
+    conn = connect(project.db_path)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO documents VALUES (?,?,?,?,?,?)", (DOC, DOC, "p", "c", 4, "now")
+    )
+    conn.executemany(
+        "INSERT INTO pages (document_id, page_index, width, height) VALUES (?,?,100,100)",
+        [(DOC, 3), (DOC, 4)],
+    )
+    region_store.create_region(
+        conn,
+        DOC,
+        3,
+        [20.0, 0.0, 60.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=3,
+        entry_index=3,
+    )
+    region_store.create_region(
+        conn,
+        DOC,
+        4,
+        [50.0, 0.0, 90.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=0,
+        entry_index=0,
+    )
+    conn.commit()
+
+    rendered = ensure_cross_page_previews(conn, project, DOC, 4, 100, variant="maxrgb")[
+        0
+    ]
+    pixels = cv2.imread(str(rendered.path), cv2.IMREAD_GRAYSCALE)
+
+    assert pixels.shape == (100, 40)
+    assert np.all(pixels[:, :20] == 80)
+    assert np.all(pixels[:, 20:] == 40)
+
+
+def test_stitch_skips_previous_page_without_unassigned_left_fragment(tmp_path):
+    project = Project(tmp_path)
+    normalized = project.pages_dir(DOC, "normalized")
+    normalized.mkdir(parents=True)
+    previous = np.full((100, 100, 3), 40, dtype=np.uint8)
+    current = np.full((100, 100, 3), 80, dtype=np.uint8)
+    cv2.imwrite(str(normalized / "p0009.png"), previous)
+    cv2.imwrite(str(normalized / "p0010.png"), current)
+
+    conn = connect(project.db_path)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO documents VALUES (?,?,?,?,?,?)", (DOC, DOC, "p", "c", 10, "now")
+    )
+    conn.executemany(
+        "INSERT INTO pages (document_id, page_index, width, height) VALUES (?,?,100,100)",
+        [(DOC, 9), (DOC, 10)],
+    )
+    region_store.create_region(
+        conn,
+        DOC,
+        9,
+        [0.0, 0.0, 40.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=5,
+        entry_index=5,
+    )
+    region_store.create_region(
+        conn,
+        DOC,
+        9,
+        [40.0, 0.0, 80.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=4,
+        entry_index=4,
+    )
+    region_store.create_region(
+        conn,
+        DOC,
+        10,
+        [60.0, 0.0, 90.0, 100.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=0,
+        entry_index=0,
+    )
+    conn.commit()
+
+    assert (
+        ensure_cross_page_previews(conn, project, DOC, 10, 100, variant="maxrgb") == []
+    )
+
+
+def test_reused_legacy_answer_filters_watermark_without_rewriting_history(page):
+    project, conn = page
+    uid = _uids(conn)[0]
+    first = _read(project, conn, [uid])[0]
+    raw = "庶一長子 FUYANG LIBRARY"
+    conn.execute(
+        "UPDATE ocr_candidates SET transcription = ? WHERE cache_key = ?",
+        (raw, first.cache_key),
+    )
+    conn.commit()
+
+    answer = _read(project, conn, [uid])[0]
+    assert answer.reused is True
+    assert answer.transcription == "庶一長子"
+    assert (
+        conn.execute(
+            "SELECT transcription FROM ocr_candidates WHERE cache_key = ?",
+            (first.cache_key,),
+        ).fetchone()[0]
+        == raw
+    )
 
 
 def test_moving_one_region_re_reads_only_that_region(page):
@@ -147,8 +396,8 @@ def test_moving_one_region_re_reads_only_that_region(page):
     _read(project, conn, [first, second])
 
     assert len(FakeRecognizer.calls) == 1
-    assert len(FakeRecognizer.calls[0]) == 1    # exactly one crop went to the model
-    assert _counts(conn) == (3, 3)              # one new answer, one new crop
+    assert len(FakeRecognizer.calls[0]) == 1  # exactly one crop went to the model
+    assert _counts(conn) == (3, 3)  # one new answer, one new crop
 
 
 def test_the_earlier_answer_survives_the_move(page):
@@ -161,10 +410,10 @@ def test_the_earlier_answer_survives_the_move(page):
 
     assert after != before
     stored = [
-        r["transcription"] for r in conn.execute(
-            "SELECT transcription FROM ocr_candidates ORDER BY id")
+        r["transcription"]
+        for r in conn.execute("SELECT transcription FROM ocr_candidates ORDER BY id")
     ]
-    assert stored == [before, after]   # the old reading is still on record
+    assert stored == [before, after]  # the old reading is still on record
 
 
 def test_moving_back_reuses_the_crop_and_the_answer(page):
@@ -181,7 +430,7 @@ def test_moving_back_reuses_the_crop_and_the_answer(page):
     answer = _read(project, conn, [uid])[0]
     assert answer.reused is True
     assert FakeRecognizer.calls == []
-    assert _counts(conn) == (2, 2)     # two boxes were ever cut, two ever read
+    assert _counts(conn) == (2, 2)  # two boxes were ever cut, two ever read
 
 
 def test_correcting_the_text_does_not_re_read_anything(page):
@@ -200,7 +449,8 @@ def test_correcting_the_text_does_not_re_read_anything(page):
     conn.execute(
         "INSERT INTO human_corrections (document_id, page_index, band_label, "
         "entry_index, role, transcription, corrected_at) "
-        "VALUES (?,58,'庶',?, 'entry', '張廷瓚', 'now')", (DOC, region.entry_index)
+        "VALUES (?,58,'庶',?, 'entry', '張廷瓚', 'now')",
+        (DOC, region.entry_index),
     )
     FakeRecognizer.calls = []
     answer = _read(project, conn, [uid])[0]
@@ -244,8 +494,10 @@ def test_a_new_model_reads_again_and_keeps_the_old_answer(page):
         FakeRecognizer.model_version = "fake-1.0"
 
     assert len(FakeRecognizer.calls) == 1
-    keys = [r["model_key"] for r in conn.execute(
-        "SELECT model_key FROM ocr_candidates ORDER BY id")]
+    keys = [
+        r["model_key"]
+        for r in conn.execute("SELECT model_key FROM ocr_candidates ORDER BY id")
+    ]
     assert len(keys) == 2 and keys[0] != keys[1]
     # The crop was not re-cut: the same pixels were read by a different model.
     assert conn.execute("SELECT COUNT(*) FROM region_crops").fetchone()[0] == 1
@@ -285,7 +537,8 @@ def test_a_region_whose_page_is_missing_fails_without_stopping_the_others(page):
         "INSERT INTO regions (region_uid, document_id, page_index, bbox_json, "
         "geometry_hash, band_label, band_ordinal, reading_order, entry_index, "
         "created_at, updated_at) VALUES ('missing',?,99,'[0,0,10,10]','h','庶',0,0,0,"
-        "'now','now')", (DOC,)
+        "'now','now')",
+        (DOC,),
     )
     answers = _read(project, conn, [*uids, "missing"])
     assert [a.error is None for a in answers] == [True, True, False]

@@ -7,7 +7,7 @@ of a region changed when a neighbour was inserted, so corrections and OCR
 answers followed positions rather than entries.
 """
 
-from familyocr.regions.model import (
+from foresight_ocr.regions.model import (
     Region,
     RegionRole,
     RegionState,

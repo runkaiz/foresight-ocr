@@ -6,7 +6,18 @@ up. In particular: correcting a transcription and reordering entries must be
 free, and they are free precisely because neither is an input here.
 """
 
-from familyocr.ocr.cache import cache_key, crop_key, model_key
+from foresight_ocr.ocr.cache import cache_key, crop_key, model_key
+
+
+def test_vl_runner_reuses_one_model_load_across_large_sequential_batches():
+    from foresight_ocr.ocr.base import get_backend
+
+    sequential = get_backend("paddleocr_vl", image_scale=0.4)
+    grouped = get_backend("paddleocr_vl", image_scale=0.4, batched=True)
+
+    assert sequential.batch_size == 1024
+    assert sequential.timeout_s == 3600.0
+    assert grouped.batch_size == 256
 
 
 def _crop(**kw):
@@ -60,7 +71,9 @@ def test_model_key_separates_configurations_of_one_model():
 
 
 def test_model_key_does_not_depend_on_dict_ordering():
-    assert model_key("b", "1", {"a": 1, "z": 2}) == model_key("b", "1", {"z": 2, "a": 1})
+    assert model_key("b", "1", {"a": 1, "z": 2}) == model_key(
+        "b", "1", {"z": 2, "a": 1}
+    )
 
 
 def test_a_new_model_reads_the_same_crop_at_a_different_address():

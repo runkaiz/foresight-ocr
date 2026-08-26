@@ -1,0 +1,1618 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Foresight OCR · 家譜校對</title>
+<style>
+  :root {
+    --bg:#14161a; --panel:#1b1e24; --line:#2b3038; --text:#e6e8ec;
+    --muted:#8c94a3; --accent:#6ea8fe; --warn:#f0b429; --ok:#4ec9a0; --bad:#f06a6a;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",
+              "Microsoft YaHei","Noto Sans CJK SC","Helvetica Neue",sans-serif;
+         overflow:hidden; }
+  .app-container { display:flex; flex-direction:column; width:100vw; height:100vh; }
+  header { display:flex; gap:14px; align-items:center; height:44px; padding:0 14px;
+           background:var(--panel); border-bottom:1px solid var(--line); flex-shrink:0; }
+  .muted { color:var(--muted); }
+  .bar { flex:1; height:6px; background:var(--line); border-radius:3px; min-width:80px; }
+  .bar > div { height:100%; background:var(--ok); border-radius:3px; width:0; }
+  .review-progress { display:flex; align-items:center; gap:6px; min-width:150px; }
+  .global-task-area { display:flex; align-items:center; gap:6px; margin-left:auto;
+                      min-width:0; white-space:nowrap; }
+  .global-task-area button:disabled { cursor:progress; color:var(--muted); opacity:.75; }
+  .document-task { display:inline-flex; align-items:center; gap:5px; max-width:245px;
+                   color:var(--muted); font-size:11px; }
+  .document-task[hidden] { display:none; }
+  .document-task .recognition-track { width:58px; flex:0 0 58px; }
+  .document-task .task-label { overflow:hidden; text-overflow:ellipsis; }
+  .document-task.complete { color:var(--ok); }
+  .document-task.error { color:var(--bad); }
+  .document-task.complete .recognition-fill { background:var(--ok); }
+  .document-task.error .recognition-fill { background:var(--bad); }
+  .export-status { max-width:170px; overflow:hidden; text-overflow:ellipsis;
+                   color:var(--muted); font-size:11px; }
+  .export-status[hidden] { display:none; }
+  .export-status.complete { color:var(--ok); }
+  .export-status.error { color:var(--bad); }
+  .learning-control { position:relative; }
+  .learning-panel { position:absolute; top:calc(100% + 8px); right:0; z-index:80;
+                    width:370px; padding:11px; white-space:normal;
+                    background:var(--panel); border:1px solid var(--line);
+                    border-radius:7px; box-shadow:0 12px 30px rgba(0,0,0,.38); }
+  .learning-panel[hidden] { display:none; }
+  .learning-head { display:flex; align-items:flex-start; justify-content:space-between;
+                   gap:12px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  .learning-head strong { display:block; font-size:13px; }
+  .learning-freshness { color:var(--muted); font-size:11px; text-align:right; }
+  .learning-freshness.pending { color:var(--warn); }
+  .learning-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+                      gap:6px; margin:9px 0; }
+  .learning-metric { padding:7px 8px; background:#0f1115;
+                     border:1px solid var(--line); border-radius:6px; }
+  .learning-metric.primary { grid-column:1 / -1; }
+  .learning-metric span { display:block; color:var(--muted); font-size:11px; }
+  .learning-metric b { font-size:16px; font-variant-numeric:tabular-nums; }
+  .learning-recoveries { display:flex; gap:12px; color:var(--muted); font-size:11px; }
+  .learning-note { margin:8px 0; padding:7px 8px; color:var(--muted); font-size:11px;
+                   background:#171b21; border-left:3px solid var(--accent); }
+  .learning-actions { display:flex; align-items:center; gap:7px; }
+  .learning-actions .recognition-progress { margin-right:auto; }
+  .button-link { display:inline-block; padding:4px 8px; color:var(--text);
+                 text-decoration:none; background:#262b34; border:1px solid var(--line);
+                 border-radius:6px; font-size:13px; }
+  .button-link:hover { border-color:var(--accent); }
+  .learning-panel.warning { border-color:var(--warn); }
+  .learning-panel.error { border-color:var(--bad); }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 250px 540px;
+         flex:1; min-height:0; overflow:hidden; }
+  #sheets { overflow:auto; padding:0; display:flex; gap:14px; align-items:stretch;
+            background:#0e1013; }
+  .sheet { position:relative; flex:0 0 100%; width:100%; height:100%; min-height:100%;
+           display:flex; flex-direction:column; }
+  .sheet-title { height:32px; flex:0 0 32px; display:flex; align-items:center;
+                 justify-content:space-between; gap:8px; padding:0 10px;
+                 background:#171b21; border-bottom:1px solid var(--line); font-size:12px; }
+  .sheet-title-meta { color:var(--muted); font-weight:400; }
+  .sheet-title-tools { display:flex; align-items:center; gap:8px; }
+  .layout-toggle { height:24px; padding:2px 8px; border-color:var(--line);
+                   color:var(--muted); font-size:11px; line-height:18px;
+                   white-space:nowrap; }
+  .layout-toggle:hover { color:var(--text); }
+  .layout-toggle[aria-pressed="true"] { border-color:var(--accent);
+                   background:rgba(110,168,254,.12); color:var(--text); }
+  .ignore-page { height:24px; padding:2px 8px; border-color:var(--line);
+                 color:var(--muted); font-size:11px; line-height:18px;
+                 white-space:nowrap; }
+  .ignore-page:hover { border-color:var(--warn); color:var(--text); }
+  .ignore-page[aria-pressed="true"] { border-color:var(--warn);
+                 background:rgba(240,180,41,.12); color:var(--warn); }
+  .image-mode { display:inline-flex; padding:2px; background:#0f1115;
+                border:1px solid var(--line); border-radius:6px; }
+  .image-mode button { padding:1px 7px; border:0; border-radius:4px;
+                       background:transparent; color:var(--muted);
+                       font-size:12px; line-height:18px; }
+  .image-mode button.active { background:#262b34; color:var(--text);
+                              box-shadow:inset 0 0 0 1px var(--accent); }
+  .reocr-page { padding:2px 8px; border-radius:5px; font-size:12px; line-height:18px; }
+  .reocr-page:disabled { cursor:progress; color:var(--muted); opacity:.72; }
+  .recognition-progress { display:inline-flex; align-items:center; gap:5px; min-width:104px;
+                          color:var(--muted); font-size:11px; white-space:nowrap; }
+  .recognition-progress[hidden] { display:none; }
+  .recognition-track { position:relative; width:48px; height:6px; overflow:hidden;
+                       background:var(--line); border-radius:3px; }
+  .recognition-fill { display:block; width:0; height:100%; background:var(--accent);
+                      border-radius:3px; transition:width .16s linear; }
+  .recognition-progress.indeterminate .recognition-fill { width:42%; animation:ocr-progress 1s ease-in-out infinite; }
+  .recognition-progress.complete .recognition-fill { width:100%; background:var(--ok); }
+  .recognition-progress.error .recognition-fill { width:100%; background:var(--bad); }
+  @keyframes ocr-progress { from { transform:translateX(-110%); }
+                            to { transform:translateX(250%); } }
+  .sheet-canvas { position:relative; flex:1; min-height:0; overflow:hidden; }
+  .sheet-canvas img { display:block; width:100%; height:100%; min-height:0;
+                      object-fit:contain; object-position:center center;
+                      border:1px solid var(--line); }
+  .sheet-canvas svg { position:absolute; inset:0; width:100%; height:100%; }
+  .page-ignore-state { position:absolute; inset:0; z-index:4; display:none;
+                       align-items:center; justify-content:center; padding:24px;
+                       text-align:center; pointer-events:none; }
+  .page-ignore-state > div { display:flex; flex-direction:column; gap:5px;
+                             max-width:360px; padding:16px 22px;
+                             background:rgba(20,22,26,.88);
+                             border:1px solid var(--warn); border-radius:9px;
+                             box-shadow:0 8px 28px rgba(0,0,0,.28); }
+  .page-ignore-state strong { color:var(--warn); font-size:16px; }
+  .page-ignore-state span { color:var(--muted); font-size:12px; }
+  .sheet.ignored .sheet-canvas img { opacity:.35; }
+  .sheet.ignored .sheet-canvas svg { display:none; }
+  .sheet.ignored .page-ignore-state { display:flex; }
+  .sheet.ignored .image-mode,
+  .sheet.ignored .reocr-page,
+  .sheet.ignored .recognition-progress { opacity:.4; pointer-events:none; }
+  rect.box { fill:transparent; stroke-width:3; cursor:pointer; }
+  rect.box.b0 { stroke:#4ec9a0; } rect.box.b1 { stroke:#6ea8fe; }
+  rect.box.b2 { stroke:#f0b429; } rect.box.b3 { stroke:#c58af9; }
+  rect.box.sel { fill:rgba(110,168,254,.22); stroke:#fff; stroke-width:5; }
+  rect.box.done { stroke-dasharray:none; fill:rgba(78,201,160,.14); }
+  rect.box.flagged { stroke:var(--bad); }
+  rect.box.header { stroke:var(--muted); stroke-dasharray:8 6; }
+  #list { overflow:auto; border-left:1px solid var(--line); background:var(--bg); }
+  .grp { padding:4px 10px; background:var(--panel); font-size:12px;
+         position:sticky; top:0; z-index:2; border-bottom:1px solid var(--line); }
+  .ignored-page-row { margin:12px; padding:18px 14px; color:var(--muted);
+                      text-align:center; background:var(--panel);
+                      border:1px solid var(--line); border-radius:7px; }
+  .ignored-page-row strong { display:block; margin-bottom:4px; color:var(--warn); }
+  .row { display:grid; grid-template-columns:46px minmax(0,1fr)
+                                         minmax(0,1.2fr) minmax(72px,.55fr);
+         gap:6px; padding:6px 10px; border-bottom:1px solid var(--line);
+         align-items:center; cursor:pointer; }
+  .row.sel { background:#232733; }
+  .row.flagged { border-left:3px solid var(--bad); }
+  .row.done { border-left:3px solid var(--ok); }
+  .row.page-header-entry { display:block; padding:9px 10px 10px;
+                           background:#181b21; border-left:3px solid var(--muted); }
+  .row.page-header-entry.sel { background:#232733; border-left-color:var(--accent); }
+  .row.page-header-entry.flagged { border-left-color:var(--bad); }
+  .row.page-header-entry.done { border-left-color:var(--ok); }
+  .page-header-top { display:flex; align-items:center; justify-content:space-between;
+                     gap:8px; margin-bottom:6px; color:var(--muted); font-size:12px; }
+  .page-header-badge { padding:1px 6px; border:1px solid var(--line);
+                       border-radius:999px; font-size:11px; }
+  .page-header-entry .meta, .page-header-entry .raw { grid-column:auto; margin-top:6px; }
+  .idx { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  input[type=text] { width:100%; padding:5px 7px; font-size:17px; background:#0f1115;
+                     color:var(--text); border:1px solid var(--line); border-radius:6px; }
+  input[type=text]:focus { outline:2px solid var(--accent); border-color:transparent; }
+  input.changed { border-color:var(--warn); }
+  input.digits { border-color:var(--accent); }
+  .meta { grid-column:2 / -1; font-size:11px; color:var(--muted); }
+  .meta b { color:var(--bad); }
+  .meta .exp { color:var(--warn); }
+  input.additional-info { grid-column:2 / -1; font-size:14px; }
+  /* The crop of the entry being read, in its own column and as large as the
+     window allows. An entry is a tall narrow column of glyphs, so height is the
+     only dimension that matters — shown inline among the rows it came out about
+     30 px wide, which is no help to somebody deciding between 三 and 五. Fixed
+     in place rather than moving with the selection, so the eye knows where to
+     look. */
+  #croppane { display:flex; flex-direction:column; align-items:center; gap:6px;
+              padding:8px; background:#0b0d10; border-left:1px solid var(--line);
+              overflow:auto; }
+  #croppane img { max-height:calc(100vh - 96px); max-width:100%; cursor:zoom-in; }
+  #croppane .cap { font-size:11px; color:var(--muted); text-align:center; }
+  #croppane .none { color:var(--muted); font-size:12px; margin-top:20px; }
+  .entry-confirmation { display:flex; align-items:center; justify-content:center; gap:8px;
+                        width:100%; padding:7px 8px; background:var(--panel);
+                        border:1px solid var(--line); border-radius:7px; }
+  .entry-confirmation strong { color:var(--ok); font-size:12px; }
+  .entry-confirmation button { padding:2px 8px; font-size:12px; }
+  .entry-confirmation button:disabled { cursor:not-allowed; color:var(--muted); opacity:.65; }
+  /* What the recognizer actually returned, when it does not agree with the
+     fields. On the harder pages it reads every glyph but scrambles their order
+     across lines, and a reviewer who cannot see that has to retype an entry
+     whose characters were all present. */
+  .raw { grid-column:2 / -1; font-size:12px; color:var(--muted);
+         background:#0f1115; border:1px solid var(--line); border-radius:5px;
+         padding:3px 6px; white-space:pre-wrap; word-break:break-all; }
+  .raw b { color:var(--text); font-weight:600; }
+  footer { position:fixed; bottom:0; right:0; padding:4px 12px; background:var(--panel);
+           border-top:1px solid var(--line); border-left:1px solid var(--line);
+           font-size:11px; color:var(--muted); display:flex; gap:12px; }
+  kbd { background:#0f1115; border:1px solid var(--line); border-radius:4px;
+        padding:0 4px; color:var(--text); }
+  button, select { background:#262b34; color:var(--text); border:1px solid var(--line);
+                   border-radius:6px; padding:4px 8px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  #flagcount { color:var(--bad); }
+  /* The lattice bar. Layout errors are not typing errors: when the comb locks
+     onto the wrong phase every column on the page is cut through its own text,
+     and the repair is one number rather than a box-by-box drag. */
+  #layoutbar { display:none; gap:12px; align-items:center; height:36px; padding:0 14px;
+               background:#171b21; border-bottom:1px solid var(--line); font-size:12px;
+               flex-shrink:0; }
+  #layoutbar.on { display:flex; }
+  #layoutbar label { display:flex; gap:5px; align-items:center; color:var(--muted); }
+  #layoutbar input[type=number] { width:6em; padding:2px 5px; font-size:12px;
+      background:#0f1115; color:var(--text); border:1px solid var(--line); border-radius:5px; }
+  line.comb { stroke:#ff5c8a; stroke-width:5; pointer-events:none; }
+  line.comb.snapped { stroke:#4ec9a0; }
+  line.comb.manual { stroke:var(--accent); stroke-dasharray:7 5; }
+  line.comb-hit { stroke:transparent; stroke-width:26; cursor:ew-resize;
+                  touch-action:none; }
+  .comb-handle:focus-within .comb-hit, .comb-handle.active .comb-hit { stroke:rgba(110,168,254,.18); }
+  .comb-handle.active .comb { stroke:#fff; stroke-width:6; stroke-dasharray:none; }
+  .comb-tag { display:none; pointer-events:none; }
+  .comb-handle.active .comb-tag, .comb-handle.manual .comb-tag { display:block; }
+  .comb-tag-bg { fill:var(--panel); stroke:var(--accent); stroke-width:1; }
+  .comb-tag-text { fill:var(--text); font-size:30px; font-family:inherit; }
+  #manual-state { color:var(--accent); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #manual-reset { padding:2px 6px; font-size:11px; color:var(--muted); }
+  #manual-reset:disabled { opacity:.45; cursor:default; }
+  body.dragging-boundary { cursor:ew-resize; user-select:none; }
+  #lstat { flex:1; min-width:70px; overflow:hidden; text-overflow:ellipsis;
+           white-space:nowrap; }
+  #lstat b { color:var(--text); }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+</style>
+</head>
+<body>
+<div class="app-container">
+<header>
+  <b id="doc">Foresight OCR</b>
+  <button onclick="go(-1)" title="上一页" aria-label="上一页">◀</button>
+  <span>第 <b id="page">—</b> 页 <span class="muted" id="pagepos"></span></span>
+  <button onclick="go(1)" title="下一页" aria-label="下一页">▶</button>
+  <!-- 201 pages is too many to walk to. The box also keeps the URL in step, so
+       a reviewer can close the tab and come back to where they stopped. -->
+  <label class="muted">跳转至
+    <input id="goto" type="number" min="1" style="width:5em"
+           onchange="jump(this.value)">
+    页
+  </label>
+  <label class="muted">跨页
+    <select id="spread" onchange="reload()">
+      <option value="1" selected>1 页</option><option value="2">2 页</option>
+      <option value="3">3 页</option>
+    </select>
+  </label>
+  <label class="muted">缩放
+    <input id="zoom" type="range" min="20" max="100" value="100" oninput="setZoom()">
+  </label>
+  <span id="flagcount"></span>
+  <span class="muted" id="frame"></span>
+  <div class="review-progress" title="人工校对进度">
+    <div class="bar"><div id="prog"></div></div>
+    <span class="muted" id="progtext"></span>
+  </div>
+  <div class="global-task-area">
+    <button id="ocr-all" type="button" onclick="startDocumentOCR()"
+            title="使用去水印图像识别整本 PDF；人工校对内容不会被覆盖">识别整本 PDF</button>
+    <span id="document-task" class="document-task" role="status"
+          aria-live="polite" aria-label="整本 PDF 识别状态" hidden>
+      <span class="recognition-track"><span class="recognition-fill"></span></span>
+      <span class="task-label"></span>
+    </span>
+    <div class="learning-control">
+      <button id="learning-toggle" type="button" onclick="toggleLearningPanel()"
+              aria-expanded="false" aria-controls="learning-panel"
+              title="回放人工校对并更新识别评测；不会重跑 OCR">校对学习</button>
+      <section id="learning-panel" class="learning-panel" hidden
+               aria-label="校对学习状态">
+        <div class="learning-head">
+          <div><strong>校对学习</strong><span class="muted" id="learning-samples">尚未分析</span></div>
+          <span id="learning-freshness" class="learning-freshness">—</span>
+        </div>
+        <div id="learning-metrics" class="learning-metrics" hidden>
+          <div class="learning-metric primary"><span>三字段全对</span><b id="learning-core">—</b></div>
+          <div class="learning-metric"><span>本人编号</span><b id="learning-own">—</b></div>
+          <div class="learning-metric"><span>父辈编号</span><b id="learning-parent">—</b></div>
+          <div class="learning-metric"><span>排行</span><b id="learning-order">—</b></div>
+        </div>
+        <div id="learning-recoveries" class="learning-recoveries" hidden>
+          <span>结构恢复 <b id="learning-structure">0</b> 次</span>
+          <span>数字修复 <b id="learning-numerals">0</b> 次</span>
+        </div>
+        <p class="learning-note">只回放人工校对并更新评测和候选规律；不会重跑 OCR、覆盖人工校对，或自动启用未经验证的规则。</p>
+        <div class="learning-actions">
+          <span id="learning-progress" class="recognition-progress" role="status"
+                aria-live="polite" aria-label="校对学习状态" hidden>
+            <span class="recognition-track"><span class="recognition-fill"></span></span>
+            <span class="recognition-label"></span>
+          </span>
+          <button id="learning-run" type="button" onclick="runLearningAnalysis()">重新分析</button>
+          <a id="learning-report" class="button-link" href="/api/learn-ocr/report"
+             target="_blank" rel="noopener">查看报告</a>
+        </div>
+      </section>
+    </div>
+    <button id="export-all" type="button" onclick="exportAll(this)"
+            title="选择文件夹并导出校对结果">导出到文件夹…</button>
+    <span id="export-status" class="export-status" role="status"
+          aria-live="polite" hidden></span>
+  </div>
+</header>
+
+<div id="layoutbar">
+  <b>第 <span id="lpage">—</span> 页版面网格</b>
+  <label>网格偏移
+    <input id="lphase" type="range" min="-190" max="190" value="0" step="1" oninput="onComb(true)">
+    <span id="lphaseval" style="width:3.2em;display:inline-block">0</span>px
+  </label>
+  <label>列距 <input id="lpitch" type="number" step="0.5" oninput="onComb(true)"></label>
+  <label>左边界 <input id="lleft" type="number" step="1" oninput="onComb(true)"></label>
+  <label>右边界 <input id="lright" type="number" step="1" oninput="onComb(true)"></label>
+  <label><input id="lsnap" type="checkbox" checked onchange="onComb(true)"> 对齐栏沟</label>
+  <span id="lstat" class="muted"></span>
+  <span id="manual-state">已手调 0 条</span>
+  <button id="manual-reset" type="button" onclick="resetManualBoundaries()" disabled>重置手调</button>
+  <label><input id="lreocr" type="checkbox" checked> 重新识别</label>
+  <button id="recut-button" onclick="applyComb()" disabled>重新切分本页</button>
+  <span id="recut-progress" class="recognition-progress" role="status"
+        aria-live="polite" aria-label="重新切分识别状态" hidden>
+    <span class="recognition-track"><span class="recognition-fill"></span></span>
+    <span class="recognition-label"></span>
+  </span>
+  <button onclick="toggleLayout()">完成</button>
+</div>
+
+<main>
+  <div id="sheets"></div>
+  <div id="croppane"><span class="none">请选择条目</span></div>
+  <div id="list"></div>
+</main>
+
+<footer>
+  <span><kbd>↑</kbd><kbd>↓</kbd> 条目</span>
+  <span><kbd>⇥</kbd> 切换字段</span>
+  <span><kbd>⏎</kbd> 确认</span>
+  <span><kbd>⇧⏎</kbd> 取消确认</span>
+  <span><kbd>⌃E</kbd> 使用建议值</span>
+  <span><kbd>⌃N</kbd> 下一条争议</span>
+  <span><kbd>⌘←→</kbd> 翻页</span>
+  <span><kbd>⌃U</kbd> 无法辨认</span>
+  <span><kbd>Esc</kbd> 还原本条</span>
+  <span><kbd>⌃L</kbd> 网格</span>
+  <span id="status"></span>
+</footer>
+</div>
+
+<script>
+let PAGES=[], SUMMARY=[], IDX=0, SHEETS=[], FLAT=[], SEL=0, TAG=null, CAPABILITIES=[];
+let DOCUMENT_OCR_POLL=null, DOCUMENT_OCR_COMPLETED=null;
+let LEARNING_SNAPSHOT=null;
+let COMB=null;      // the lattice preview, while the bar is open
+let LAYOUT_PAGE=null;
+let MANUAL_BOUNDARIES = new Map();
+let ACTIVE_BOUNDARY = null;
+const FIELDS = ['own_id','parent','birth_order','additional_info'];
+const FINDING_LABELS = {
+  unparsed:'无法解析', band_mismatch:'字辈不符', duplicate:'编号重复',
+  non_monotonic:'顺序不递增', gap:'序列缺口', duplicate_id:'编号重复',
+  unresolved_father:'父辈未找到', no_father_field:'缺少父辈字段',
+  order_conflict:'排行冲突', order_reversed:'排行颠倒',
+};
+const FRAME_LABELS = {automatic:'自动', fallback:'推定', failed:'失败'};
+const HEADER_LABELS = {
+  document_title:'族谱书名', generation_title:'世代标题',
+  section_title:'字辈分节标题', page_header:'页眉',
+};
+const $ = s => document.querySelector(s);
+const status = (m, sticky=false) => { $('#status').textContent = m;
+  clearTimeout(window._t);
+  if(!sticky) window._t = setTimeout(()=>$('#status').textContent='',2200); };
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function boot(){
+  const r = await (await fetch('/api/pages')).json();
+  PAGES=r.pages; SUMMARY=r.summary||[]; TAG=r.tag; CAPABILITIES=r.capabilities||[];
+  $('#doc').textContent=r.document_id;
+  setProgress(r.progress);
+  configureGlobalActions();
+  loadLearningReport();
+  await pollDocumentOCR();
+  const want = +location.hash.replace('#p','');
+  if(want){ jump(want); } else { await load(0); }
+  addEventListener('hashchange', ()=>{
+    const p = +location.hash.replace('#p','');
+    if(p && SHEETS[0] && SHEETS[0].page !== p) jump(p);
+  });
+}
+function setProgress(p){
+  const pct = p.entries ? 100*p.reviewed/p.entries : 0;
+  $('#prog').style.width = pct.toFixed(1)+'%';
+  $('#progtext').textContent = `已校对 ${p.reviewed}/${p.entries}`;
+}
+function setZoom(){
+  const w = $('#zoom').value;
+  document.querySelectorAll('.sheet').forEach(s=>{
+    s.style.width = w+'%';
+    s.style.flexBasis = w+'%';
+  });
+}
+
+async function load(i, selectedRegionUid=null){
+  const layoutWasOpen = $('#layoutbar').classList.contains('on');
+  const previousLayoutPage = LAYOUT_PAGE;
+  if(layoutWasOpen) invalidateComb('正在载入本页网格…');
+  IDX = Math.max(0, Math.min(PAGES.length-1, i));
+  const span = $('#spread').value;
+  const r = await (await fetch(`/api/page?page=${PAGES[IDX]}&spread=${span}`)).json();
+  SHEETS = r.pages;
+  // One flat list across the spread: a band's sequence continues over the page
+  // break, so the reviewer should be able to walk straight through it.
+  FLAT = [];
+  SHEETS.filter(s => !s.ignored)
+    .forEach(s => s.entries.forEach(e => FLAT.push(e)));
+  const retained = selectedRegionUid
+    ? FLAT.findIndex(e=>e.region_uid===selectedRegionUid) : -1;
+  SEL = retained>=0 ? retained : 0;
+  $('#page').textContent = SHEETS.map(s=>s.page).join('–');
+  $('#pagepos').textContent = `（${IDX+1}/${PAGES.length}）`;
+  const flags = FLAT.filter(e=>e.flagged).length;
+  $('#flagcount').textContent = flags ? `${flags} 条争议` : '';
+  if(SHEETS[0]){
+    $('#goto').value = SHEETS[0].page;
+    // replaceState, not a hash assignment: this is recording where the reviewer
+    // is, and it should not fill the back button with every page they passed.
+    history.replaceState(null, '', `#p${SHEETS[0].page}`);
+  }
+  const odd = SHEETS.filter(s=>s.frame_status && s.frame_status!=='automatic');
+  $('#frame').textContent = odd.length
+    ? `版框：${odd.map(s=>'第 '+s.page+' 页 '+(FRAME_LABELS[s.frame_status]||s.frame_status)).join('，')}`
+    : '';
+  setProgress(r.progress);
+  render();
+  if(layoutWasOpen){
+    const target = SHEETS.find(s=>s.page===previousLayoutPage && !s.ignored)
+      || SHEETS.find(s=>!s.ignored);
+    if(target){
+      LAYOUT_PAGE = target.page;
+      syncLayoutToggles();
+      await resetComb();
+    } else {
+      closeLayout();
+    }
+  }
+}
+function reload(){ load(IDX); }
+
+function render(){
+  const sheets = $('#sheets'); sheets.innerHTML='';
+  let flatIdx = 0;
+  SHEETS.forEach(s => {
+    const div = document.createElement('div');
+    div.className='sheet'+(s.ignored?' ignored':'');
+    const visibleEntries = s.ignored ? [] : s.entries;
+    const boxes = visibleEntries.map(e => {
+      const i = flatIdx++;
+      const visibleBox = e.crop_bbox || e.bbox;
+      if (!visibleBox) return '';
+      const [x0,y0,x1,y1] = visibleBox;
+      const cls = ['box','b'+(e.band_index%4)];
+      if (e.role !== 'entry') cls.push('header');
+      if (e.flagged) cls.push('flagged');
+      if (e.human!=null || e.unreadable) cls.push('done');
+      return `<rect class="${cls.join(' ')}" data-i="${i}" x="${x0}" y="${y0}"
+                width="${x1-x0}" height="${y1-y0}"></rect>`;
+    }).join('');
+    const frameLabel = s.frame_status && s.frame_status!=='automatic'
+      ? `版框：${FRAME_LABELS[s.frame_status]||s.frame_status}` : '版框：自动';
+    const hasWatermarkView = CAPABILITIES.includes('page_image_watermark');
+    const hasPageIgnore = CAPABILITIES.includes('page_ignore');
+    const disabled = s.ignored ? ' disabled' : '';
+    const ignoreControl = hasPageIgnore ? `
+      <button type="button" class="ignore-page" aria-pressed="${s.ignored?'true':'false'}"
+              title="保留扫描图像，但整本识别、校对进度和所有导出都会跳过本页"
+              onclick="togglePageIgnored(${s.page},this)">
+        ${s.ignored?'恢复此页':'忽略此页'}
+      </button>` : '';
+    div.dataset.page = s.page;
+    div.innerHTML = `
+      <div class="sheet-title">
+        <strong>第 ${s.page} 页</strong>
+        <div class="sheet-title-tools">
+          <span class="sheet-title-meta">${esc(frameLabel)}</span>
+          <button type="button" class="layout-toggle" data-page="${s.page}"
+                  aria-pressed="false" title="预览并调整本页的分栏边界"
+                  onclick="toggleLayout(${s.page})"${disabled}>版面网格</button>
+          ${ignoreControl}
+          <div class="image-mode" role="group" aria-label="页面图像显示方式"
+               title="只切换校对时显示的图像，不会修改源扫描件">
+            <button type="button" class="${hasWatermarkView?'':'active'}"
+                    aria-pressed="${hasWatermarkView?'false':'true'}" data-variant="original"
+                    onclick="setPageImage(${s.page},'original',this)"${disabled}>原图</button>
+            <button type="button" class="${hasWatermarkView?'active':''}"
+                    aria-pressed="${hasWatermarkView?'true':'false'}" data-variant="watermark"
+                    onclick="setPageImage(${s.page},'watermark',this)"${disabled}>去水印</button>
+          </div>
+          <button type="button" class="reocr-page"
+                  title="使用去水印图像重新识别本页；人工校对内容不会被覆盖"
+                  onclick="reocrPage(${s.page},this)"${disabled}>重新识别</button>
+          <span class="recognition-progress" data-page-progress="${s.page}"
+                role="status" aria-live="polite"
+                aria-label="第 ${s.page} 页重新识别状态" hidden>
+            <span class="recognition-track"><span class="recognition-fill"></span></span>
+            <span class="recognition-label"></span>
+          </span>
+        </div>
+      </div>
+      <div class="sheet-canvas">
+        <img src="/img?path=${encodeURIComponent(s.image)}" alt="第 ${s.page} 页原始图像">
+        <div class="page-ignore-state" role="status">
+          <div><strong>本页已忽略</strong>
+            <span>保留扫描图像 · 不参与识别、校对进度或导出</span></div>
+        </div>
+        <svg viewBox="0 0 ${s.width} ${s.height}"
+             preserveAspectRatio="xMidYMid meet">${boxes}</svg>
+      </div>`;
+    sheets.appendChild(div);
+  });
+  sheets.querySelectorAll('rect.box').forEach(r=>{
+    r.addEventListener('click', ()=>{ SEL=+r.dataset.i; focusSel(); });
+  });
+  SHEETS.filter(s=>!s.ignored).forEach(s=>setPageImage(
+    s.page, CAPABILITIES.includes('page_image_watermark') ? 'watermark' : 'original'
+  ));
+
+  const list = $('#list'); list.innerHTML='';
+  let idx = 0;
+  SHEETS.forEach(s => {
+    if(s.ignored){
+      const note = document.createElement('div');
+      note.className = 'ignored-page-row';
+      note.innerHTML = `<strong>第 ${s.page} 页 · 已忽略</strong>`
+        + '本页不参与识别、校对进度或导出';
+      list.appendChild(note);
+      return;
+    }
+    let lastBand = null;
+    s.entries.forEach(e => {
+      if (e.band_label !== lastBand) {
+        lastBand = e.band_label;
+        const h = document.createElement('div');
+        h.className='grp';
+        h.textContent = `第 ${s.page} 页 · ${e.band_label} 字第`;
+        list.appendChild(h);
+      }
+      const i = idx++;
+      const row = document.createElement('div');
+      row.className = 'row'+(i===SEL?' sel':'')+(e.flagged?' flagged':'')
+        +((e.human!=null||e.unreadable)?' done':'')
+        +(e.role!=='entry'?' header page-header-entry':'');
+      row.dataset.i = i;
+      row.addEventListener('click', ()=>{ SEL=i; mark(); });
+
+      const findings = e.findings.map(x=>`<b>${esc(FINDING_LABELS[x.kind]||x.kind)}</b>`).join(' ');
+      const expected = e.expected_own_id
+        ? `<span class="exp">预期编号 ${esc(e.expected_own_id)} — ⌃E</span>` : '';
+      const notes = [
+        e.unreadable ? '无法辨认' : '',
+        findings, expected,
+      ].filter(Boolean).join(' · ');
+
+      // Show the reading itself whenever the fields do not account for it: the
+      // characters are usually all there and only their order is wrong, which
+      // is a glance to fix and a retype to miss.
+      const composed = FIELDS.map(f=>e[f]||'').join('');
+      const flat = (e.machine||'').replace(/\s+/g,' ').trim();
+      // An explicit empty human correction means the reviewer deliberately
+      // removed the machine text. Do not visually resurrect it as "raw OCR".
+      const showRaw = e.human!=='' && flat && flat.replace(/\s/g,'') !== composed;
+
+      row.innerHTML = e.role!=='entry' ? `
+        <div class="page-header-top">
+          <strong>${esc(HEADER_LABELS[e.header_kind]||'页眉')}</strong>
+          <span class="page-header-badge">非人物条目</span>
+        </div>
+        <input type="text" data-i="${i}" data-f="own_id"
+          value="${esc(e.own_id)}" placeholder="页眉文字">
+        ${notes ? `<div class="meta">${notes}</div>` : ''}
+        ${flat ? `<div class="raw">原始识别 <b>${esc(flat)}</b></div>` : ''}` : `
+        <div class="idx">${e.band_label}·${e.entry_index + 1}</div>
+        ${FIELDS.map(f=>`<input type="text" data-i="${i}" data-f="${f}"
+            class="${f==='additional_info'?'additional-info':''}"
+            value="${esc(e[f])}" placeholder="${f==='own_id'?'本人编号':
+              f==='parent'?'父辈编号或姓名':f==='birth_order'?'排行':
+              '附加信息（如生辰）'}"
+            >`).join('')}
+        ${notes ? `<div class="meta">${notes}</div>` : ''}
+        ${showRaw ? `<div class="raw">原始识别 <b>${esc(flat)}</b></div>` : ''}`;
+      list.appendChild(row);
+    });
+  });
+  list.querySelectorAll('input[type=text]').forEach(inp=>{
+    inp.dataset.orig = inp.value;
+    inp.addEventListener('input', ()=>{
+      inp.classList.toggle('changed', inp.value!==inp.dataset.orig);
+      // Digits are an instruction to write a numeral, not a transcription.
+      inp.classList.toggle('digits', /^\d+$/.test(inp.value.trim()));
+    });
+    inp.addEventListener('focus', ()=>{ SEL=+inp.dataset.i; mark(); });
+    inp.addEventListener('blur', ()=> normalize(inp));
+  });
+  setZoom();
+  drawComb();
+  syncLayoutToggles();
+  focusSel();
+}
+
+async function togglePageIgnored(page, button){
+  if(!CAPABILITIES.includes('page_ignore')){
+    status('校对服务仍在运行旧版代码，请重启 foresight-ocr review 后再试', true);
+    return;
+  }
+  const sheet = SHEETS.find(s=>s.page===page);
+  if(!sheet || button.disabled) return;
+  const ignored = !sheet.ignored;
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/page-ignore', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({page_index:page, ignored})});
+    const result = await response.json();
+    if(!response.ok || result.error){
+      throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    SUMMARY = result.summary || SUMMARY;
+    if(result.progress) setProgress(result.progress);
+    if(ignored && LAYOUT_PAGE===page) closeLayout();
+    status(ignored
+      ? `第 ${page} 页已忽略；扫描图像仍保留，识别、进度和导出会跳过本页`
+      : `第 ${page} 页已恢复到识别、校对进度和导出`);
+    await load(IDX);
+  } catch(error) {
+    status(`第 ${page} 页状态保存失败：${error.message}`, true);
+  } finally {
+    if(button.isConnected) button.disabled = false;
+  }
+}
+
+async function setPageImage(page, variant, clicked=null){
+  if(variant==='watermark' && !CAPABILITIES.includes('page_image_watermark')){
+    status('校对服务仍在运行旧版代码，请重启 foresight-ocr review 后再试', true);
+    return;
+  }
+  const data = SHEETS.find(s=>s.page===page);
+  const sheet = document.querySelector(`.sheet[data-page="${page}"]`);
+  if(!data || !sheet) return;
+  if(data.ignored){
+    status(`第 ${page} 页已忽略；恢复后才能切换处理图像`);
+    return;
+  }
+  sheet.querySelectorAll('.image-mode button').forEach(button=>{
+    const active = button.dataset.variant===variant;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  const image = sheet.querySelector('.sheet-canvas img');
+  if(variant==='original'){
+    image.src = `/img?path=${encodeURIComponent(data.image)}`;
+    image.alt = `第 ${page} 页原始图像`;
+    return;
+  }
+  try {
+    if(!data.variant_image){
+      if(clicked) clicked.disabled = true;
+      const response = await fetch(`/api/page-image?page=${page}&variant=watermark`);
+      const result = await response.json();
+      if(result.error) throw new Error(result.error);
+      data.variant_image = result.path;
+    }
+    const current = document.querySelector(`.sheet[data-page="${page}"]`);
+    if(!current || !SHEETS.includes(data)) return;
+    current.querySelector('.sheet-canvas img').src =
+      `/img?path=${encodeURIComponent(data.variant_image)}`;
+    current.querySelector('.sheet-canvas img').alt = `第 ${page} 页去水印图像`;
+  } catch(error) {
+    status(`第 ${page} 页去水印图像生成失败：${error.message}`);
+    await setPageImage(page, 'original');
+  } finally {
+    if(clicked) clicked.disabled = false;
+  }
+}
+
+function updateRecognitionProgress(node, event){
+  if(!node) return;
+  const completed = Math.max(0, Number(event.completed)||0);
+  const total = Math.max(0, Number(event.total)||0);
+  const labels = {queued:'等待中', recutting:'切分中', preparing:'准备中', recognizing:'识别中'};
+  const label = labels[event.stage] || '处理中';
+  node.hidden = false;
+  node.className = 'recognition-progress'+(total && completed ? '' : ' indeterminate');
+  node.querySelector('.recognition-fill').style.width = total && completed
+    ? `${Math.min(100, 100*completed/total)}%` : '';
+  node.querySelector('.recognition-label').textContent = total
+    ? `${label} ${completed}/${total}` : `${label}…`;
+}
+
+function finishRecognitionProgress(node, state, label){
+  if(!node) return;
+  node.hidden = false;
+  node.className = `recognition-progress ${state}`;
+  node.querySelector('.recognition-fill').style.width = '100%';
+  node.querySelector('.recognition-label').textContent = label;
+}
+
+async function postWithProgress(url, payload, onProgress){
+  const response = await fetch(url, {method:'POST',
+    headers:{'Content-Type':'application/json','Accept':'application/x-ndjson'},
+    body:JSON.stringify({...payload, stream:true})});
+  const contentType = response.headers.get('Content-Type') || '';
+  if(!contentType.includes('application/x-ndjson')){
+    const result = await response.json();
+    if(!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+    return result;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = '', result = null;
+  const consume = line => {
+    if(!line.trim()) return;
+    const event = JSON.parse(line);
+    if(event.type==='progress') onProgress(event);
+    else if(event.type==='result') result = event;
+    else if(event.type==='error') throw new Error(event.error);
+  };
+  while(true){
+    const {value,done} = await reader.read();
+    pending += decoder.decode(value || new Uint8Array(), {stream:!done});
+    const lines = pending.split('\n');
+    pending = lines.pop() || '';
+    lines.forEach(consume);
+    if(done) break;
+  }
+  consume(pending);
+  if(!result) throw new Error('识别服务未返回结果');
+  if(result.error) throw new Error(result.error);
+  return result;
+}
+
+async function reocrPage(page, button){
+  if(!CAPABILITIES.includes('page_reocr')){
+    status('校对服务仍在运行旧版代码，请重启 foresight-ocr review 后再试', true);
+    return;
+  }
+  const sheet = SHEETS.find(s=>s.page===page);
+  if(sheet && sheet.ignored){
+    status(`第 ${page} 页已忽略；请先恢复此页`);
+    return;
+  }
+  if(button.disabled) return;
+  const original = button.textContent;
+  const progressNode = document.querySelector(`[data-page-progress="${page}"]`);
+  button.disabled = true;
+  button.textContent = '识别中…';
+  status(`正在使用去水印图像重新识别第 ${page} 页…`, true);
+  updateRecognitionProgress(progressNode, {stage:'queued', completed:0, total:0});
+  try {
+    const result = await postWithProgress(
+      '/api/reocr', {page, variant:'watermark'},
+      event=>updateRecognitionProgress(progressNode, event),
+    );
+    if(result.progress) setProgress(result.progress);
+    const report = result.report;
+    const failed = report.errors.length;
+    finishRecognitionProgress(
+      progressNode, failed ? 'error' : 'complete', failed ? `${failed} 个失败` : '识别完成'
+    );
+    status(`第 ${page} 页已重新识别 ${report.read}/${report.requested} 个区域`
+      +(failed ? `，${failed} 个失败` : ''));
+    await load(IDX);
+  } catch(error) {
+    finishRecognitionProgress(progressNode, 'error', '识别失败');
+    status(`第 ${page} 页重新识别失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function configureGlobalActions(){
+  const ocrButton = $('#ocr-all');
+  const exportButton = $('#export-all');
+  const learningButton = $('#learning-toggle');
+  const canDocumentOCR = CAPABILITIES.includes('document_reocr');
+  ocrButton.disabled = !canDocumentOCR;
+  if(!canDocumentOCR){
+    ocrButton.title = '校对服务仍在运行旧版代码，请重启 foresight-ocr review 后再试';
+  }
+  const folderPicker = typeof window.showDirectoryPicker === 'function';
+  exportButton.textContent = folderPicker ? '导出到文件夹…' : '下载 ZIP';
+  exportButton.title = folderPicker
+    ? '选择文件夹并导出校对结果'
+    : '当前浏览器不支持直接选择文件夹，将下载 ZIP';
+  exportButton.disabled = !CAPABILITIES.includes(
+    folderPicker ? 'folder_export' : 'zip_export'
+  );
+  learningButton.disabled = !CAPABILITIES.includes('correction_learning');
+  if(learningButton.disabled){
+    learningButton.title = '校对服务仍在运行旧版代码，请重启 foresight-ocr review 后再试';
+  }
+}
+
+function learningPercent(value){
+  return Number.isFinite(Number(value)) ? `${(Number(value)*100).toFixed(1)}%` : '—';
+}
+
+function renderLearning(snapshot){
+  LEARNING_SNAPSHOT = snapshot;
+  const panel = $('#learning-panel');
+  const report = snapshot && snapshot.report;
+  panel.classList.remove('warning','error');
+  if(!report){
+    $('#learning-samples').textContent = '尚未生成评测快照';
+    $('#learning-freshness').textContent = snapshot && snapshot.pending_corrections
+      ? `${snapshot.pending_corrections} 条校对待分析` : '待首次分析';
+    $('#learning-freshness').classList.add('pending');
+    $('#learning-metrics').hidden = true;
+    $('#learning-recoveries').hidden = true;
+    $('#learning-report').setAttribute('aria-disabled','true');
+    $('#learning-report').style.pointerEvents = 'none';
+    return;
+  }
+  $('#learning-report').removeAttribute('aria-disabled');
+  $('#learning-report').style.pointerEvents = '';
+  $('#learning-samples').textContent = `${report.eligible_entries} 条完整校对样本`;
+  $('#learning-core').textContent = learningPercent(report.exact_core_rate);
+  $('#learning-own').textContent = learningPercent(report.rates && report.rates.own_id);
+  $('#learning-parent').textContent = learningPercent(report.rates && report.rates.parent);
+  $('#learning-order').textContent = learningPercent(report.rates && report.rates.birth_order);
+  const recoveries = report.recoveries || {};
+  $('#learning-structure').textContent =
+    (Number(recoveries.own_label_from_geometry)||0)
+    +(Number(recoveries.parent_label_from_structure)||0);
+  $('#learning-numerals').textContent = Object.values(recoveries.numeral_repairs||{})
+    .reduce((total,value)=>total+(Number(value)||0),0);
+  $('#learning-metrics').hidden = false;
+  $('#learning-recoveries').hidden = false;
+  const pending = Number(snapshot.pending_corrections)||0;
+  const freshness = $('#learning-freshness');
+  freshness.classList.toggle('pending', pending>0);
+  if(pending){
+    freshness.textContent = `新增 ${pending} 条，待重新分析`;
+  } else if(snapshot.analyzed_at){
+    const when = new Date(snapshot.analyzed_at);
+    freshness.textContent = Number.isNaN(when.getTime())
+      ? '已分析' : `上次分析 ${when.toLocaleString('zh-CN',{hour12:false})}`;
+  } else {
+    freshness.textContent = '已分析';
+  }
+  if(snapshot.comparison && snapshot.comparison.status==='lower'){
+    panel.classList.add('warning');
+    freshness.textContent = `指标下降 ${learningPercent(Math.abs(snapshot.comparison.delta))}`;
+  }
+}
+
+async function loadLearningReport(){
+  if(!CAPABILITIES.includes('correction_learning')) return;
+  try {
+    const response = await fetch('/api/learn-ocr');
+    const result = await response.json();
+    if(!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+    renderLearning(result);
+  } catch(error) {
+    $('#learning-panel').classList.add('error');
+    $('#learning-freshness').textContent = '无法读取学习报告';
+  }
+}
+
+function toggleLearningPanel(force){
+  const panel = $('#learning-panel');
+  const open = force===undefined ? panel.hidden : Boolean(force);
+  panel.hidden = !open;
+  $('#learning-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+  if(open && !LEARNING_SNAPSHOT) loadLearningReport();
+}
+
+async function runLearningAnalysis(){
+  const button = $('#learning-run');
+  const progressNode = $('#learning-progress');
+  button.disabled = true;
+  progressNode.hidden = false;
+  progressNode.className = 'recognition-progress indeterminate';
+  progressNode.querySelector('.recognition-label').textContent = '分析中…';
+  status('正在回放人工校对并更新评测；不会启动 OCR', true);
+  try {
+    const response = await fetch('/api/learn-ocr', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'});
+    const result = await response.json();
+    if(!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+    renderLearning(result);
+    progressNode.className = result.comparison && result.comparison.status==='lower'
+      ? 'recognition-progress' : 'recognition-progress complete';
+    progressNode.querySelector('.recognition-label').textContent =
+      result.comparison && result.comparison.status==='lower' ? '指标下降' : '分析完成';
+    status(`已分析 ${result.report.eligible_entries} 条完整校对样本`);
+  } catch(error) {
+    progressNode.className = 'recognition-progress error';
+    progressNode.querySelector('.recognition-label').textContent = '分析失败';
+    $('#learning-panel').classList.add('error');
+    status(`校对学习失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.addEventListener('click', event=>{
+  if(!event.target.closest('.learning-control') && !$('#learning-panel').hidden){
+    toggleLearningPanel(false);
+  }
+});
+
+function renderDocumentOCR(job){
+  const button = $('#ocr-all');
+  const node = $('#document-task');
+  if(!job || job.status==='idle'){
+    node.hidden = true;
+    button.disabled = !CAPABILITIES.includes('document_reocr');
+    button.textContent = '识别整本 PDF';
+    return;
+  }
+  const busy = job.status==='queued' || job.status==='running';
+  const pct = Math.max(0, Math.min(100, Number(job.percent)||0));
+  const current = Number(job.current_page_position)||0;
+  const total = Number(job.total_pages)||0;
+  const stageLabels = {queued:'等待开始', preparing:'正在准备', recognizing:'正在识别'};
+  node.hidden = false;
+  node.className = 'document-task';
+  node.querySelector('.recognition-fill').style.width = `${pct}%`;
+  button.disabled = busy;
+  button.textContent = busy ? '识别中…' : '识别整本 PDF';
+  if(busy){
+    const label = stageLabels[job.stage] || '处理中';
+    node.querySelector('.task-label').textContent = total
+      ? `${label} ${current}/${total} 页 · ${Math.round(pct)}%`
+      : `${label}…`;
+    return;
+  }
+  if(job.status==='complete'){
+    const failures = job.report && job.report.errors ? job.report.errors.length : 0;
+    node.classList.add(failures ? 'error' : 'complete');
+    node.querySelector('.task-label').textContent = failures
+      ? `识别完成，${failures} 个失败` : `识别完成 · ${total}/${total} 页`;
+    if(job.review_progress) setProgress(job.review_progress);
+    if(job.id && DOCUMENT_OCR_COMPLETED!==job.id){
+      DOCUMENT_OCR_COMPLETED = job.id;
+      if(SHEETS.length) load(IDX);
+    }
+    return;
+  }
+  node.classList.add('error');
+  node.querySelector('.task-label').textContent = '整本识别失败';
+  if(job.error) status(`整本识别失败：${job.error}`, true);
+}
+
+function scheduleDocumentOCRPoll(){
+  clearTimeout(DOCUMENT_OCR_POLL);
+  DOCUMENT_OCR_POLL = setTimeout(pollDocumentOCR, 800);
+}
+
+async function pollDocumentOCR(){
+  if(!CAPABILITIES.includes('document_reocr_progress')) return;
+  try {
+    const response = await fetch('/api/reocr-all');
+    const result = await response.json();
+    if(!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+    renderDocumentOCR(result.job);
+    if(result.job && ['queued','running'].includes(result.job.status)){
+      scheduleDocumentOCRPoll();
+    }
+  } catch(error) {
+    status(`无法读取整本识别进度：${error.message}`, true);
+  }
+}
+
+async function startDocumentOCR(){
+  const button = $('#ocr-all');
+  if(button.disabled) return;
+  button.disabled = true;
+  const activePages = SUMMARY.filter(page=>!page.ignored).length;
+  renderDocumentOCR({status:'queued', stage:'queued', percent:0,
+    current_page_position:0, total_pages:activePages});
+  status('整本 PDF 已加入增量识别队列；已有结果和人工校对不会被重复处理', true);
+  try {
+    const response = await fetch('/api/reocr-all', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({variant:'watermark', force:false})});
+    const result = await response.json();
+    if(!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+    renderDocumentOCR(result.job);
+    scheduleDocumentOCRPoll();
+  } catch(error) {
+    button.disabled = false;
+    renderDocumentOCR({status:'error', error:error.message, percent:0});
+  }
+}
+
+// A reviewer types 343 and means 三百四十三. The conversion lives on the server
+// so there is one description of how this book writes numbers — the same one
+// the parser reads back.
+async function normalize(inp){
+  const raw = inp.value.trim();
+  if(!/^\d+$/.test(raw)) return;
+  const e = FLAT[+inp.dataset.i];
+  if(e.role!=='entry') return;
+  const label = inp.dataset.f==='own_id' ? e.own_label
+              : inp.dataset.f==='parent' ? e.parent_label : null;
+  if(!label){ return; }
+  const r = await (await fetch(`/api/numeral?label=${encodeURIComponent(label)}&n=${raw}`)).json();
+  if(r.text){ inp.value = r.text; inp.classList.remove('digits');
+              inp.classList.toggle('changed', inp.value!==inp.dataset.orig); }
+}
+
+function mark(){
+  document.querySelectorAll('.row').forEach(r=>r.classList.toggle('sel', +r.dataset.i===SEL));
+  document.querySelectorAll('rect.box').forEach(r=>r.classList.toggle('sel', +r.dataset.i===SEL));
+  showCrop();
+}
+function showCrop(){
+  const e = FLAT[SEL], pane = $('#croppane');
+  if(!e){
+    const ignored = SHEETS.filter(s=>s.ignored).map(s=>s.page);
+    pane.innerHTML = ignored.length
+      ? `<span class="none">第 ${ignored.join('、')} 页已忽略</span>`
+      : '<span class="none">请选择条目</span>';
+    return;
+  }
+  const crop = e.crop_path
+    ? `<img src="/img?path=${encodeURIComponent(e.crop_path)}" alt="当前条目裁图"
+         onclick="window.open(this.src)">
+       <div class="cap">第 ${e.page_index} 页 · ${e.band_label}·${e.entry_index + 1}
+         · 点击查看原图</div>`
+    : '<span class="none">此条目没有可用裁图</span>';
+  const confirmed = e.human!=null || e.unreadable;
+  const canUnconfirm = CAPABILITIES.includes('correction_unconfirm');
+  const confirmation = confirmed ? `
+    <div class="entry-confirmation">
+      <strong>本条已确认</strong>
+      <button type="button" class="unconfirm-entry" onclick="unconfirmSelected(this)"
+              title="${canUnconfirm?'删除人工确认并恢复机器识别':'请重启新版 foresight-ocr review 服务后使用'}"
+              ${canUnconfirm?'':'disabled'}>取消确认</button>
+    </div>` : '';
+  pane.innerHTML = crop + confirmation;
+}
+function focusSel(field){
+  const want = field || 'own_id';
+  const inp = document.querySelector(`input[data-i="${SEL}"][data-f="${want}"]`);
+  if(inp){ inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+    inp.closest('.row').scrollIntoView({block:'nearest'}); }
+  const box = document.querySelector(`rect.box[data-i="${SEL}"]`);
+  if(box) box.closest('.sheet').scrollIntoView({block:'nearest', inline:'nearest'});
+  mark();
+}
+function fieldsOf(i){
+  const out = {};
+  document.querySelectorAll(`input[data-i="${i}"]`).forEach(inp=>{
+    out[inp.dataset.f] = inp.value.trim() || null;
+  });
+  return out;
+}
+
+async function accept(i){
+  const e = FLAT[i];
+  if(!e) return;
+  const inp = document.activeElement;
+  if(inp && inp.dataset && inp.dataset.i==String(i)) await normalize(inp);
+  const fields = fieldsOf(i);
+  const response = await fetch('/api/correction',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({page_index:e.page_index, band_label:e.band_label,
+      entry_index:e.entry_index, role:e.role, fields, unreadable:false})});
+  const r = await response.json();
+  if(!response.ok || r.error){
+    status(`保存失败：${r.error || `HTTP ${response.status}`}`, true);
+    return;
+  }
+  if(r.progress) setProgress(r.progress);
+  loadLearningReport();
+  e.human = r.transcription;
+  Object.assign(e, fields);
+  const row = document.querySelector(`.row[data-i="${i}"]`);
+  if(row) row.classList.add('done');
+  const box = document.querySelector(`rect.box[data-i="${i}"]`);
+  if(box) box.classList.add('done');
+  document.querySelectorAll(`input[data-i="${i}"]`).forEach(x=>{
+    x.dataset.orig = x.value; x.classList.remove('changed'); });
+}
+async function markUnreadable(i){
+  const e = FLAT[i];
+  if(!e) return;
+  const response = await fetch('/api/correction',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({page_index:e.page_index, band_label:e.band_label,
+      entry_index:e.entry_index, role:e.role,
+      transcription:null, unreadable:true})});
+  const r = await response.json();
+  if(!response.ok || r.error){
+    status(`保存失败：${r.error || `HTTP ${response.status}`}`, true);
+    return;
+  }
+  if(r.progress) setProgress(r.progress);
+  loadLearningReport();
+  e.unreadable = true; status('已标记为无法辨认'); render();
+}
+async function unconfirmSelected(button=null){
+  if(!CAPABILITIES.includes('correction_unconfirm')){
+    status('校对服务仍在运行旧版代码，请重启 foresight-ocr review 后再试', true);
+    return;
+  }
+  const e = FLAT[SEL];
+  if(!e || (e.human==null && !e.unreadable)){
+    status('本条尚未确认');
+    return;
+  }
+  const regionUid = e.region_uid;
+  if(button) button.disabled = true;
+  try {
+    const response = await fetch('/api/correction',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'unconfirm', page_index:e.page_index,
+        band_label:e.band_label, entry_index:e.entry_index, role:e.role})});
+    const result = await response.json();
+    if(!response.ok || result.error){
+      throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    if(result.progress) setProgress(result.progress);
+    loadLearningReport();
+    await load(IDX, regionUid);
+    status(result.removed ? '已取消确认，并恢复机器识别' : '本条已是未确认状态');
+  } catch(error) {
+    status(`取消确认失败：${error.message}`, true);
+  } finally {
+    if(button && button.isConnected) button.disabled = false;
+  }
+}
+function takeExpected(){
+  const e = FLAT[SEL];
+  if(!e || !e.expected_own_id) { status('此处没有建议值'); return; }
+  const inp = document.querySelector(`input[data-i="${SEL}"][data-f="own_id"]`);
+  if(inp){ inp.value = e.expected_own_id; inp.classList.add('changed');
+           inp.focus(); status(`已采用 ${e.expected_own_id}`); }
+}
+async function exportAll(){
+  const button = $('#export-all');
+  const output = $('#export-status');
+  if(button.disabled) return;
+  button.disabled = true;
+  output.hidden = false;
+  output.className = 'export-status';
+  try {
+    if(typeof window.showDirectoryPicker === 'function'){
+      output.textContent = '请选择导出文件夹…';
+      let directory;
+      try {
+        directory = await window.showDirectoryPicker({mode:'readwrite'});
+      } catch(error) {
+        if(error && error.name === 'AbortError'){
+          output.hidden = true;
+          status('已取消导出');
+          return;
+        }
+        throw error;
+      }
+      output.textContent = `正在导出到：${directory.name}`;
+      const response = await fetch('/api/export',{method:'POST',
+        headers:{'Content-Type':'application/json'}, body:'{}'});
+      const result = await response.json();
+      if(!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+      for(const file of result.files || []){
+        const handle = await directory.getFileHandle(file.name, {create:true});
+        const writable = await handle.createWritable();
+        await writable.write(file.content);
+        await writable.close();
+      }
+      output.className = 'export-status complete';
+      output.textContent = `已导出到：${directory.name}`;
+      status(`已导出 ${result.entries} 条，含 ${result.human} 条人工校对`);
+    } else {
+      output.textContent = '正在生成 ZIP…';
+      const response = await fetch('/api/export.zip');
+      if(!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${$('#doc').textContent || 'foresight-ocr'}_export.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+      output.className = 'export-status complete';
+      output.textContent = 'ZIP 已下载';
+      status('当前浏览器不支持选择文件夹，已改为下载 ZIP');
+    }
+  } catch(error) {
+    output.className = 'export-status error';
+    output.textContent = '导出失败';
+    status(`导出失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+function go(d){ load(IDX + d*Math.max(1, +$('#spread').value)); }
+
+// --------------------------------------------------------------------------
+// The lattice.
+//
+// Some pages come back with every entry wrong, and not because the recognizer
+// misread them: the comb that cuts the columns landed half a column off, so
+// each crop holds the left of one entry and the right of the next. That is one
+// mistake, made once, for the whole page — so it gets one control, not a drag
+// per box. The preview is free; only `re-cut page` spends anything.
+
+function layoutSheet(){
+  return SHEETS.find(s=>s.page===LAYOUT_PAGE) || null;
+}
+
+function syncLayoutToggles(){
+  const open = $('#layoutbar').classList.contains('on');
+  document.querySelectorAll('.layout-toggle').forEach(button=>{
+    const pressed = open && +button.dataset.page===LAYOUT_PAGE;
+    button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+  });
+}
+
+function invalidateComb(message='正在加载网格预览…'){
+  clearTimeout(_combTimer);
+  _combRequest++;
+  COMB = null;
+  $('#recut-button').disabled = true;
+  $('#lstat').textContent = message;
+  drawComb();
+}
+
+function closeLayout(){
+  const bar = $('#layoutbar');
+  clearTimeout(_combTimer);
+  _combRequest++;
+  bar.classList.remove('on');
+  document.body.classList.remove('laying');
+  COMB = null; LAYOUT_PAGE = null;
+  MANUAL_BOUNDARIES.clear(); ACTIVE_BOUNDARY = null; updateManualState();
+  $('#recut-button').disabled = true;
+  $('#lstat').textContent = '';
+  drawComb();
+  syncLayoutToggles();
+}
+
+async function toggleLayout(page=null){
+  const bar = $('#layoutbar');
+  const open = bar.classList.contains('on');
+  if(page==null && open){ closeLayout(); return; }
+  const requested = page==null
+    ? (FLAT[SEL] && FLAT[SEL].page_index) || (SHEETS.find(s=>!s.ignored)||{}).page
+    : +page;
+  if(open && requested===LAYOUT_PAGE){ closeLayout(); return; }
+  const sheet = SHEETS.find(s=>s.page===requested);
+  if(!sheet) return;
+  if(sheet.ignored){
+    status(`第 ${sheet.page} 页已忽略；请先恢复此页`);
+    return;
+  }
+  LAYOUT_PAGE = sheet.page;
+  bar.classList.add('on');
+  document.body.classList.add('laying');
+  syncLayoutToggles();
+  await resetComb();
+}
+
+async function resetComb(){
+  const sheet = layoutSheet();
+  if(!sheet) return;
+  MANUAL_BOUNDARIES.clear(); ACTIVE_BOUNDARY = null; updateManualState();
+  $('#lpage').textContent = sheet.page;
+  $('#lphase').value = 0; $('#lphaseval').textContent = '0';
+  ['#lpitch','#lleft','#lright'].forEach(id=>$(id).value='');
+  $('#lsnap').checked = true;
+  invalidateComb('正在加载网格预览…');
+  // Straight to the fetch rather than through the debounce: the readouts below
+  // are set from the answer, and a debounced call returns before it arrives.
+  await fetchComb();
+  // The slider spans one pitch: beyond half a pitch in either direction the
+  // lattice is simply the next column along, which the boundaries already say.
+  if(COMB){
+    const half = Math.round(COMB.fitted_pitch/2);
+    $('#lphase').min = -half; $('#lphase').max = half;
+    $('#lpitch').placeholder = COMB.fitted_pitch.toFixed(1);
+    $('#lleft').placeholder = Math.round(COMB.fitted_text_left);
+    $('#lright').placeholder = Math.round(COMB.fitted_text_right);
+  }
+}
+
+let _combTimer = null, _combRequest = 0;
+function onComb(resetManual=false){
+  if(resetManual){ MANUAL_BOUNDARIES.clear(); ACTIVE_BOUNDARY=null; updateManualState(); }
+  $('#lphaseval').textContent = $('#lphase').value;
+  invalidateComb('正在更新网格预览…');
+  _combTimer = setTimeout(fetchComb, 90);
+}
+
+function updateManualState(){
+  $('#manual-state').textContent = `已手调 ${MANUAL_BOUNDARIES.size} 条`;
+  $('#manual-reset').disabled = MANUAL_BOUNDARIES.size===0;
+}
+
+async function resetManualBoundaries(){
+  if(!MANUAL_BOUNDARIES.size) return;
+  MANUAL_BOUNDARIES.clear(); ACTIVE_BOUNDARY=null; updateManualState();
+  await fetchComb();
+}
+
+async function fetchComb(){
+  const sheet = layoutSheet();
+  if(!sheet || !$('#layoutbar').classList.contains('on')) return;
+  const page = sheet.page;
+  const request = ++_combRequest;
+  $('#recut-button').disabled = true;
+  $('#lphaseval').textContent = $('#lphase').value;
+  const q = new URLSearchParams({
+    page,
+    phase: $('#lphase').value,
+    pitch: $('#lpitch').value,
+    left:  $('#lleft').value,
+    right: $('#lright').value,
+    snap:  $('#lsnap').checked ? '1' : '0',
+    manual: JSON.stringify(Object.fromEntries(MANUAL_BOUNDARIES)),
+  });
+  try {
+    const response = await fetch('/api/comb?'+q);
+    const r = await response.json();
+    if(request !== _combRequest || page!==LAYOUT_PAGE) return;
+    if(!response.ok || r.error) throw new Error(r.error || `HTTP ${response.status}`);
+    COMB = r;
+    updateManualState();
+    const edges = [...r.boundaries].sort((a,b)=>a-b);
+    const gaps = edges.slice(1).map((x,i)=>Math.round(x-edges[i]));
+    // Even spacing is the tell that the phase is right; one short gap among even
+    // ones is a boundary that snapped to a gutter belonging to something else.
+    $('#lstat').innerHTML =
+      `每代 <b>${r.entries_per_band}</b> 条（共 ${r.entries} 列）· `
+      + `列距 ${gaps.length?Math.min(...gaps)+'–'+Math.max(...gaps):'—'} px · `
+      + `${r.snapped.filter(Boolean).length}/${r.boundaries.length} 个边界对齐 `
+      + `${r.gutters.length} 个栏沟 · 置信度 ${r.pitch_confidence.toFixed(2)}`;
+    $('#recut-button').disabled = false;
+    drawComb();
+  } catch(error) {
+    if(request !== _combRequest || page!==LAYOUT_PAGE) return;
+    COMB = null;
+    $('#recut-button').disabled = true;
+    $('#lstat').textContent = `预览失败：${error.message}`;
+    drawComb();
+    status(`第 ${page} 页版面网格预览失败：${error.message}`, true);
+  }
+}
+
+function drawComb(){
+  document.querySelectorAll('#sheets .comb-handle').forEach(g=>g.remove());
+  const data = layoutSheet();
+  const sheet = data
+    ? document.querySelector(`#sheets .sheet[data-page="${data.page}"]`) : null;
+  if(!sheet) return;
+  const svg = sheet.querySelector('svg');
+  if(!svg) return;
+  if(!COMB || !data) return;
+  const h = data.height;
+  COMB.boundaries.forEach((x,i)=>{
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    const manual = MANUAL_BOUNDARIES.has(i) || (COMB.manual && COMB.manual[i]);
+    g.setAttribute('class', 'comb-handle'+(manual?' manual':'')
+      +(ACTIVE_BOUNDARY===i?' active':''));
+    g.dataset.index = i;
+    const l = document.createElementNS('http://www.w3.org/2000/svg','line');
+    l.setAttribute('class', 'comb'+(COMB.snapped[i]?' snapped':'')+(manual?' manual':''));
+    l.setAttribute('x1', x); l.setAttribute('x2', x);
+    l.setAttribute('y1', 0); l.setAttribute('y2', h);
+    const hit = document.createElementNS('http://www.w3.org/2000/svg','line');
+    hit.setAttribute('class', 'comb-hit');
+    hit.setAttribute('x1', x); hit.setAttribute('x2', x);
+    hit.setAttribute('y1', 0); hit.setAttribute('y2', h);
+    hit.setAttribute('tabindex', '0'); hit.setAttribute('role', 'slider');
+    hit.setAttribute('aria-label', `边界 ${i+1}`);
+    hit.setAttribute('aria-valuenow', Math.round(x));
+    const tag = document.createElementNS('http://www.w3.org/2000/svg','g');
+    tag.setAttribute('class', 'comb-tag');
+    const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    bg.setAttribute('class', 'comb-tag-bg'); bg.setAttribute('rx', 5);
+    bg.setAttribute('width', 240); bg.setAttribute('height', 48);
+    const text = document.createElementNS('http://www.w3.org/2000/svg','text');
+    text.setAttribute('class', 'comb-tag-text'); text.setAttribute('y', 34);
+    tag.append(bg,text); g.append(l,hit,tag); svg.appendChild(g);
+    positionBoundary(g, x, false);
+    bindBoundaryDrag(g);
+  });
+}
+
+function boundaryRange(index){
+  const sheet = layoutSheet();
+  const gap = 4;
+  return {
+    min:index<COMB.boundaries.length-1 ? COMB.boundaries[index+1]+gap : 0,
+    max:index>0 ? COMB.boundaries[index-1]-gap : sheet.width,
+  };
+}
+
+function positionBoundary(group, rawX, clamp=true){
+  const index = +group.dataset.index;
+  const range = boundaryRange(index);
+  const rounded = Math.round(rawX*10)/10;
+  const x = clamp ? Math.max(range.min, Math.min(range.max, rounded)) : rounded;
+  group.querySelectorAll('line').forEach(line=>{
+    line.setAttribute('x1', x); line.setAttribute('x2', x);
+  });
+  const tag = group.querySelector('.comb-tag');
+  const tagX = Math.min(Math.max(2, x+8), Math.max(2, layoutSheet().width-244));
+  tag.querySelector('rect').setAttribute('x', tagX);
+  const text = tag.querySelector('text'); text.setAttribute('x', tagX+7);
+  text.textContent = `边界 ${index+1} · ${Math.round(x)} px`;
+  const hit = group.querySelector('.comb-hit');
+  hit.setAttribute('aria-valuenow', Math.round(x));
+  hit.setAttribute('aria-valuemin', Math.ceil(range.min));
+  hit.setAttribute('aria-valuemax', Math.floor(range.max));
+  return x;
+}
+
+function setManualBoundary(group, rawX){
+  const index = +group.dataset.index;
+  const x = positionBoundary(group, rawX);
+  COMB.boundaries[index] = x; COMB.snapped[index] = false;
+  MANUAL_BOUNDARIES.set(index, x); ACTIVE_BOUNDARY = index;
+  group.classList.add('manual','active');
+  group.querySelector('.comb').classList.remove('snapped');
+  group.querySelector('.comb').classList.add('manual');
+  updateManualState();
+}
+
+function bindBoundaryDrag(group){
+  const hit = group.querySelector('.comb-hit');
+  let dragging = false;
+  hit.addEventListener('pointerdown', event=>{
+    event.preventDefault(); dragging=true; _combRequest++;
+    ACTIVE_BOUNDARY=+group.dataset.index;
+    document.querySelectorAll('.comb-handle').forEach(g=>g.classList.remove('active'));
+    group.classList.add('active'); document.body.classList.add('dragging-boundary');
+    hit.setPointerCapture(event.pointerId);
+  });
+  hit.addEventListener('pointermove', event=>{
+    if(!dragging) return;
+    const svg = hit.ownerSVGElement, point = svg.createSVGPoint();
+    point.x=event.clientX; point.y=event.clientY;
+    setManualBoundary(group, point.matrixTransform(svg.getScreenCTM().inverse()).x);
+  });
+  const finish = async event=>{
+    if(!dragging) return;
+    dragging=false; document.body.classList.remove('dragging-boundary');
+    if(hit.hasPointerCapture(event.pointerId)) hit.releasePointerCapture(event.pointerId);
+    await fetchComb();
+  };
+  hit.addEventListener('pointerup', finish);
+  hit.addEventListener('pointercancel', finish);
+  hit.addEventListener('keydown', async event=>{
+    if(event.altKey) return;
+    if(!['ArrowLeft','ArrowRight'].includes(event.key)) return;
+    event.preventDefault(); ACTIVE_BOUNDARY=+group.dataset.index;
+    const delta=(event.key==='ArrowRight'?1:-1)*(event.shiftKey?10:1);
+    setManualBoundary(group, COMB.boundaries[ACTIVE_BOUNDARY]+delta);
+    await fetchComb();
+  });
+}
+
+async function applyComb(){
+  const sheet = layoutSheet();
+  if(!COMB || !sheet) return;
+  if(sheet.ignored){
+    status(`第 ${sheet.page} 页已忽略；请先恢复此页`);
+    return;
+  }
+  const reocr = $('#lreocr').checked;
+  const button = $('#recut-button'), progressNode = $('#recut-progress');
+  button.disabled = true;
+  status(reocr ? '正在重新切分并识别…' : '正在重新切分…', reocr);
+  if(reocr) updateRecognitionProgress(
+    progressNode, {stage:'recutting', completed:0, total:0}
+  );
+  try {
+    const payload = {
+      page: sheet.page,
+      phase_offset: +$('#lphase').value,
+      pitch: $('#lpitch').value || null,
+      text_left: $('#lleft').value || null,
+      text_right: $('#lright').value || null,
+      snap: $('#lsnap').checked,
+      reocr,
+      boundary_overrides: Object.fromEntries(MANUAL_BOUNDARIES),
+    };
+    const r = reocr
+      ? await postWithProgress('/api/recut', payload,
+          event=>updateRecognitionProgress(progressNode, event))
+      : await (await fetch('/api/recut', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})).json();
+    if(r.error) throw new Error(r.error);
+    if(r.progress) setProgress(r.progress);
+    loadLearningReport();
+    const d = r.report;
+    if(reocr) finishRecognitionProgress(
+      progressNode, d.errors.length ? 'error' : 'complete',
+      d.errors.length ? `${d.errors.length} 个失败` : '识别完成'
+    );
+    status(`每代 ${d.entries_per_band} 条 — 移动 ${d.moved}，新增 ${d.created}，`
+         + `撤回 ${d.retired}，重新识别 ${d.read}`);
+    // The page's findings described entry positions that have just changed, so
+    // they are gone until `validate` runs again; say so rather than showing a
+    // clean page that has not been checked.
+    await load(IDX);
+    if(reocr) setTimeout(()=>{ progressNode.hidden=true; }, 1800);
+  } catch(error) {
+    if(reocr) finishRecognitionProgress(progressNode, 'error', '识别失败');
+    status(`重新切分失败：${error.message}`, true);
+  } finally {
+    button.disabled = !COMB;
+  }
+}
+
+// Flagged entries are where the sequence checksum disagrees with the reading.
+// Walking to the next one is the difference between reviewing a page and
+// hunting through it; past the end of the spread it carries on to the next page
+// that has one, so a clean run of pages costs no keystrokes.
+function nextFlagged(dir){
+  const order = dir>0 ? [...FLAT.keys()] : [...FLAT.keys()].reverse();
+  for(const i of order){
+    if((dir>0 ? i>SEL : i<SEL) && FLAT[i].flagged){ SEL=i; focusSel(); return; }
+  }
+  for(let step=1; step<=PAGES.length; step++){
+    const j = IDX + dir*step;
+    if(j<0 || j>=PAGES.length) break;
+    const s = SUMMARY.find(x=>x.page===PAGES[j]);
+    if(s && !s.ignored && s.flagged){ load(j).then(()=>{
+      const k = FLAT.findIndex(e=>e.flagged);
+      if(k>=0){ SEL=k; focusSel(); }
+      status(`第 ${PAGES[j]} 页 · ${s.flagged} 条争议`);
+    }); return; }
+  }
+  status(dir>0 ? '前方没有争议条目' : '后方没有争议条目');
+}
+
+// Page numbers are the book's, not the list's: pages the pipeline skipped leave
+// gaps, so jumping to 177 must land on 177 and not on the 177th sheet.
+function jump(page){
+  const want = +page;
+  if(!want) return;
+  let best = 0;
+  PAGES.forEach((p,i)=>{ if(p<=want) best=i; });
+  load(best);
+}
+
+// Review shortcuts are Control-only. Prefer the physical key and fall back to
+// the legacy numeric code for remote or older browsers.
+function shortcutLetter(ev){
+  if(!ev.ctrlKey || ev.altKey || ev.metaKey) return '';
+  if(/^Key[A-Z]$/.test(ev.code || '')) return ev.code.slice(3).toLowerCase();
+  const legacy = Number(ev.keyCode || ev.which);
+  if(legacy>=65 && legacy<=90) return String.fromCharCode(legacy).toLowerCase();
+  return typeof ev.key==='string' && ev.key.length===1 ? ev.key.toLowerCase() : '';
+}
+
+document.addEventListener('keydown', async ev=>{
+  // Option combinations are left entirely to the browser and operating system.
+  if(ev.altKey) return;
+  // Enter and letter keys emitted while a Chinese IME is composing are text,
+  // not review commands. keyCode 229 covers older WebKit/remote browsers.
+  if(ev.isComposing || ev.keyCode===229) return;
+  if(ev.metaKey && ev.key==='ArrowLeft'){ ev.preventDefault(); return go(-1); }
+  if(ev.metaKey && ev.key==='ArrowRight'){ ev.preventDefault(); return go(1); }
+  const shortcut = shortcutLetter(ev);
+  if(shortcut==='u'){ ev.preventDefault(); return markUnreadable(SEL); }
+  if(shortcut==='e'){ ev.preventDefault(); return takeExpected(); }
+  if(shortcut==='n'){ ev.preventDefault(); return nextFlagged(1); }
+  if(shortcut==='p'){ ev.preventDefault(); return nextFlagged(-1); }
+  if(shortcut==='l'){ ev.preventDefault(); return toggleLayout(); }
+  const unconfirmButton = ev.target && ev.target.closest
+    ? ev.target.closest('.unconfirm-entry') : null;
+  if(ev.key==='Enter' && unconfirmButton){
+    if(ev.shiftKey){ ev.preventDefault(); return unconfirmSelected(unconfirmButton); }
+    return;
+  }
+  if(ev.key==='Enter' && ev.shiftKey){
+    ev.preventDefault(); return unconfirmSelected();
+  }
+  if(ev.key==='Escape'){
+    document.querySelectorAll(`input[data-i="${SEL}"]`).forEach(i=>{
+      i.value=i.dataset.orig; i.classList.remove('changed','digits'); });
+    ev.preventDefault(); return;
+  }
+  if(ev.key==='Enter'){ ev.preventDefault(); await accept(SEL);
+    if(SEL<FLAT.length-1){ SEL++; focusSel(); } else { status('当前跨页校对完成'); go(1); } return; }
+  if(ev.key==='ArrowDown' && SEL<FLAT.length-1){ ev.preventDefault(); SEL++; focusSel(); }
+  if(ev.key==='ArrowUp' && SEL>0){ ev.preventDefault(); SEL--; focusSel(); }
+}, {capture:true});
+boot();
+</script>
+</body>
+</html>

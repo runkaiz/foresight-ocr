@@ -1,149 +1,284 @@
-# familyocr
+# Foresight OCR
 
-Digitization pipeline for scanned Chinese genealogy records (族譜 / 宗譜).
+Foresight OCR is a provenance-first pipeline for transcribing scanned Chinese
+genealogy records (族譜 / 宗譜) into reviewable text and structured family data.
+It is built for vertical Traditional Chinese, repeated genealogy layouts,
+damaged pages, library watermarks, and records that continue across physical
+page boundaries.
 
-First corpus: `source/丙辰庶富教1.pdf` — 卷十 雁序圖 of 富陽長壽章氏宗譜, 201 pages,
-one JPEG2000 raster per page at 2424×3744 @ 535 ppi.
+The project keeps image extraction, normalization, layout analysis, OCR, human
+correction, validation, and genealogy reconstruction separate. Every result can
+be traced back to the source pixels that produced it.
 
-The goal is maximum reliable transcription and structural reconstruction, with
-provenance back to source pixels. Accuracy and auditability come before compute
-efficiency. Every intermediate representation stays inspectable — no
-page-image-to-JSON black box.
+> **Project status:** research preview (`0.1.0`). The pipeline and review app
+> are exercised against a real 201-page genealogy volume, but new document
+> families still require an explicit profile and a checked layout template.
 
-## Setup
+## What it looks like
 
-```bash
-uv venv --python 3.12
-uv pip install -e ".[dev]"
-```
+### Review workspace
 
-Python 3.12 is required: `paddlepaddle` and `paddleocr` have no wheels for 3.13+.
+![Foresight OCR review workspace showing a source page, provenance crop, and structured fields](docs/screenshots/review-workspace.jpg)
+
+The page image, selected provenance crop, and structured transcription stay in
+view together. Confirmed human readings are visibly distinguished from the raw
+OCR candidate retained below each record.
+
+### Layout editor
+
+![Foresight OCR layout editor showing lattice controls over the review workspace](docs/screenshots/layout-editor.jpg)
+
+The same workspace exposes document geometry when needed: reviewers can adjust
+grid offset, column pitch, page bounds, and gutter alignment before re-cutting a
+page. Re-segmentation preserves stable region identity and existing human work.
+
+### Image restoration benchmark
+
+![Side-by-side watermark restoration variants](docs/screenshots/watermark-variants.png)
+
+The restoration benchmark keeps competing image variants side by side. A
+clean-looking page is not automatically a better OCR input: removing a cyan
+stamp can also erase black ink underneath it, so model accuracy decides which
+variant is useful.
+
+## Capabilities
+
+- Preserves embedded source rasters and records checksums before processing.
+- Detects page frames, corrects scan displacement and perspective, and maps
+  normalized coordinates back to original pixels.
+- Learns repeated generation bands and vertical entry columns from the corpus,
+  with editable YAML profiles and templates for document-specific structure.
+- Benchmarks isolated OCR backends and image variants without overwriting raw
+  model output.
+- Parses printed generation IDs, father references, birth order, names, and
+  optional free-form biographical text without modernizing the source.
+- Uses consecutive IDs and reconstructed father links as structural checks that
+  direct human attention to likely OCR or segmentation failures.
+- Provides a local Chinese-language review workspace with multi-page context,
+  re-cutting, re-OCR, page exclusion, correction history, progress, and export.
+- Exports reviewed transcription data, a generation-ordered people table, and
+  GEDCOM while keeping machine output separate from human corrections.
 
 ## Pipeline
 
-Stages are independently rerunnable and communicate only through artifacts on
-disk and rows in SQLite, so changing the OCR model never forces a re-extract or
-a re-layout.
-
-```bash
-familyocr inspect source/丙辰庶富教1.pdf   # PDF structure  -> docs/corpus-analysis.md
-familyocr extract 丙辰庶富教1              # preserve originals + decode PNGs
-familyocr normalize 丙辰庶富教1            # frame detection -> canonical space
-familyocr restore 丙辰庶富教1              # watermark suppression benchmark
-familyocr layout 丙辰庶富教1               # bands, columns, learned template
-familyocr segment 丙辰庶富教1              # entry crops at 3 context widths
-familyocr validate 丙辰庶富教1             # sequential-ID checksum
-familyocr db                               # what has been produced so far
+```text
+PDF
+  → original raster extraction
+  → page normalization and restoration variants
+  → generation-band and entry segmentation
+  → OCR candidates and structural validation
+  → human review
+  → people, father links, TSV, and GEDCOM
 ```
 
-OCR benchmark (Deliverable 2):
+Stages are independently rerunnable. Generated assets and state live under
+`artifacts/`; source documents and local databases are ignored by Git.
+
+## Installation
+
+Foresight OCR currently targets Python 3.12. After a release is published, the
+recommended Python-based install is an isolated tool environment:
 
 ```bash
-familyocr segment 丙辰庶富教1 --pages 50-70 --variants original,maxrgb
-familyocr benchmark 丙辰庶富教1 --backends ppocr_v5,paddleocr_vl \
-                                 --variants original,maxrgb --contexts tight
-familyocr rescore 丙辰庶富教1              # re-measure without re-running models
-familyocr review-queue 丙辰庶富教1         # crops worth hand-verifying
-familyocr report-ocr 丙辰庶富教1           # -> docs/ocr-benchmark.md
+uv tool install --python 3.12 foresight-ocr
+foresight-ocr --version
+foresight-ocr doctor
 ```
 
-Use a **contiguous** page range for the benchmark. The sequence checksum treats
-a break in the ID run as an error, and on a sampled page set the breaks are real.
+`pipx install --python 3.12 foresight-ocr` is also supported. GitHub
+Releases additionally provide standalone archives that include Python and the
+core native libraries:
+
+| Platform | Release target |
+|---|---|
+| Linux x86-64, glibc 2.35+ | `linux-x86_64` |
+| Linux ARM64, glibc 2.35+ | `linux-arm64` |
+| macOS 14+, Intel | `macos-x86_64` |
+| macOS 14+, Apple silicon | `macos-arm64` |
+| Windows 10/11, x86-64 | `windows-x86_64` |
+
+Each archive is built and smoke-tested on its target operating system. Release
+assets include `SHA256SUMS` and GitHub build-provenance attestations. The Linux
+standalone build targets glibc 2.35 from Ubuntu 22.04. The builders inspect every
+bundled ELF or Mach-O object and fail if a dependency raises the documented
+Linux or macOS floor. Source/Python installs may work on additional systems but
+are not release-gated there.
+
+Download the archive for your platform and `SHA256SUMS` from the same GitHub
+release, then compare the archive's SHA-256 digest before extracting it. On
+Linux use `sha256sum ARCHIVE`; on macOS use `shasum -a 256 ARCHIVE`; on Windows
+PowerShell use `Get-FileHash ARCHIVE -Algorithm SHA256`.
+
+Linux and macOS archives are extracted with:
+
+```bash
+tar -xzf foresight-ocr-VERSION-TARGET.tar.gz
+./foresight-ocr-VERSION-TARGET/foresight-ocr doctor
+```
+
+On Windows PowerShell:
+
+```powershell
+Expand-Archive foresight-ocr-VERSION-windows-x86_64.zip -DestinationPath .
+.\foresight-ocr-VERSION-windows-x86_64\foresight-ocr.exe doctor
+```
+
+Keep the complete extracted directory together; the executable loads native
+libraries from its adjacent `_internal` directory. Run it from the directory
+where you want the Foresight project to live, because the current working
+directory owns `configs/` and `artifacts/`. Signed release binaries should pass
+Gatekeeper or SmartScreen without asking users to bypass operating-system
+security checks.
+
+For a source checkout, install the locked development environment with:
+
+```bash
+uv sync --frozen --extra dev
+uv run foresight-ocr --help
+```
+
+## Quick start
+
+Place a PDF under `source/` and inspect it. The filename stem becomes the
+document ID unless `--id` is supplied.
+
+```bash
+foresight-ocr inspect source/YOUR_DOCUMENT.pdf
+```
+
+Inspection writes `configs/profile_YOUR_DOCUMENT.yaml`. Confirm its generation
+labels before continuing; they are document data, not a global constant.
+
+```bash
+foresight-ocr extract YOUR_DOCUMENT
+foresight-ocr normalize YOUR_DOCUMENT
+foresight-ocr restore YOUR_DOCUMENT
+foresight-ocr layout YOUR_DOCUMENT
+foresight-ocr segment YOUR_DOCUMENT
+foresight-ocr validate YOUR_DOCUMENT
+```
+
+Each command supports page-range and stage-specific options. Use
+`foresight-ocr COMMAND --help` before a corpus-wide run.
 
 ## OCR backends
 
-Each backend runs in its own virtualenv, driven as a subprocess over a JSON
-manifest. PaddleOCR and mlx-vlm cannot share an environment — their transformers
-pins conflict, and PaddleOCR's own documentation says to keep the Transformers
-engine and vLLM apart. Isolation also means a segfault in a native OCR library
-kills the child rather than the pipeline.
+OCR engines run in dedicated environments because PaddleOCR and MLX-VLM have
+conflicting model stacks. They communicate with the pipeline through JSON
+manifests, so an engine failure cannot corrupt pipeline state.
+
+### PP-OCRv5
 
 ```bash
-uv venv --python 3.12 .venv-paddle && VIRTUAL_ENV=.venv-paddle uv pip install paddlepaddle paddleocr
-uv venv --python 3.12 .venv-vlm    && VIRTUAL_ENV=.venv-vlm    uv pip install mlx-vlm
-.venv-paddle/bin/python runners/ppocr_v5.py --probe
-.venv-vlm/bin/python runners/paddleocr_vl.py --probe
+uv venv --python 3.12 .venv-paddle
+uv pip install --python .venv-paddle paddlepaddle paddleocr
+foresight-ocr backends
 ```
 
-| backend | model | device |
-|---|---|---|
-| `ppocr_v5` | PP-OCRv5 (`chinese_cht`) | CPU |
-| `paddleocr_vl` | PaddleOCR-VL 1.6 (0.9B) | Metal via MLX |
-
-Crops are fed **unrotated**. In vertical Chinese the glyphs are upright and only
-the line direction is vertical; rotating the crop lays every character on its
-side and accuracy collapses.
-
-## What this corpus makes possible
-
-Entry IDs (`庶五百八十七`, `教千百九十三`) run sequentially across the whole
-volume. Per band, a correct transcription must be a complete, strictly
-increasing integer run — so `familyocr validate` localizes OCR and segmentation
-errors to individual crops **without any manual ground truth**. Findings are
-recorded, never repaired: rewriting a number to satisfy the sequence would
-manufacture the agreement the check exists to measure.
-
-## Entry structure
-
-An entry holds three printed fields:
-
-```
-庶三百三十五   允二百八十六   次子
-own id         father's id     birth order
-```
-
-The father's id names a person in the *previous* generation band, so parent
-links are printed on the page rather than inferred from geometry. The generation
-chain is `允 → 庶 → 富 → 教`, which means **the same character is an own label in
-one band and a parent label in the next**: 庶 identifies the entry in band 0 and
-its father in band 1. `parse_entry` must be told which band a crop came from.
-
-The parent slot holds an id **or a name**: where the father's generation id is
-unknown, the page prints his name instead. Both are links to the previous
-generation, so `parent_id` and `parent_name` are scored together. Named fathers
-are common in the 教 band, which makes it the rare-character band.
-
-A bare `子` marks an only son and ranks as 長子. It is stored exactly as printed
-and ranked through `ParsedEntry.order_rank` — the rank is derived, the
-transcription is never rewritten.
-
-The block prints 教 as the variant form 敎 (U+654E). That one substitution is
-mapped explicitly in `LABEL_VARIANTS` and recorded on the parse result; glyphs
-that merely resemble a label (族 / 康 / 鹿 for 庶) are recognition errors and are
-left to fail loudly.
-
-## Layout
-
-```
-src/familyocr/
-  document/      PDF ingest, original-raster preservation, checksums
-  imaging/       variants, watermark suppression, debug overlays
-  layout/        rule detection, frame fitting, normalization, template discovery
-  segmentation/  entry lattice and crop generation
-  validation/    Chinese numeral parsing, sequence checking
-  compute/       ComputeBackend protocol (LocalBackend only, for now)
-  persistence/   SQLite schema
-  cli/           stage commands
-artifacts/       generated; safe to delete and regenerate
-docs/            corpus-analysis.md, layout-poc-report.md
-configs/         learned template YAML (hand-editable)
-```
-
-`artifacts/pages/<doc>/original/` holds the untouched embedded JPEG2000 streams.
-Nothing in the pipeline writes to them after extraction.
-
-## Tests
+### PaddleOCR-VL on Apple silicon
 
 ```bash
-.venv/bin/python -m pytest -q
+uv venv --python 3.12 .venv-vlm
+uv pip install --python .venv-vlm mlx-vlm
+foresight-ocr backends
 ```
 
-Structural tests only, on synthetic pages: coordinate transforms round-trip,
-band boundaries stay ordered, crops stay in bounds, numerals parse or fail
-loudly. The real corpus is exercised through the stage reports.
+On Windows, use `.venv-paddle/Scripts/python.exe` and
+`.venv-vlm/Scripts/python.exe` in the two `uv pip install --python` commands.
+The backend runner scripts are included in both the Python wheel and standalone
+archives; users do not need a repository checkout to launch them.
 
-## Status
+Run a benchmark over a contiguous page range so the consecutive-ID checksum
+remains meaningful:
 
-Deliverable 1 (corpus + layout proof of concept) is implemented — see
-`docs/layout-poc-report.md`. Deliverable 2 (OCR benchmark) and Deliverable 3
-(cross-page continuity) have not started; no OCR backend is wired up yet.
+```bash
+foresight-ocr segment YOUR_DOCUMENT \
+  --pages 50-70 --variants original,maxrgb
+foresight-ocr benchmark YOUR_DOCUMENT \
+  --backends ppocr_v5,paddleocr_vl \
+  --variants original,maxrgb --contexts tight
+foresight-ocr report-ocr YOUR_DOCUMENT
+```
+
+The backend runner environments are optional. The core test suite uses
+synthetic fixtures and does not download model weights.
+
+## Human review
+
+Start the local review server after segmentation and OCR:
+
+```bash
+foresight-ocr review YOUR_DOCUMENT
+```
+
+The server binds to `127.0.0.1:8765` by default and opens the review workspace.
+It has no authentication layer and should not be exposed directly to an
+untrusted network.
+
+Human corrections never overwrite raw OCR candidates. They are stored with the
+reviewer, source region, and correction state, and are preferred only when
+building reviewed exports.
+
+## Genealogy reconstruction and export
+
+```bash
+foresight-ocr graph YOUR_DOCUMENT
+```
+
+This rebuilds people and father links from the current reviewed state, records
+unresolved or inconsistent relationships as findings, and writes:
+
+```text
+artifacts/analysis/YOUR_DOCUMENT/genealogy/persons.tsv
+artifacts/analysis/YOUR_DOCUMENT/genealogy/YOUR_DOCUMENT.ged
+```
+
+Exports follow the document profile's semantic generation order and numeric ID
+order within each generation. Blank or malformed identifiers remain present
+with stable provenance rather than being guessed into place.
+
+## Repository layout
+
+```text
+src/foresight_ocr/
+  cli/           independently rerunnable pipeline commands
+  document/      PDF inspection, profiles, and source extraction
+  imaging/       restoration variants and diagnostic overlays
+  layout/        frame, rule, normalization, and template analysis
+  segmentation/  generation bands and entry-region detection
+  ocr/           backend contracts, parsing, scoring, and learning reports
+  regions/       stable region identity, crops, reconciliation, and re-cutting
+  review/        local HTTP API and browser review workspace
+  genealogy/     people, father links, TSV, and GEDCOM
+  persistence/   SQLite schema, migrations, and stage locks
+configs/         editable per-document profiles and layout templates
+docs/            methodology reports and README images
+runners/         isolated OCR backend entry points
+tests/           synthetic structural and workflow coverage
+```
+
+## Development
+
+```bash
+uv run pytest -q --cov=foresight_ocr --cov-branch --cov-report=term-missing
+uv build
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the transcription and provenance
+rules expected of contributions. The original design brief and current
+methodology reports are available in [get-started.md](get-started.md) and
+[`docs/`](docs/).
+
+## Data and privacy
+
+Source PDFs, generated pages and crops, SQLite databases, and model environments
+are excluded from version control. Before sharing a bug reproduction, confirm
+that you have permission to publish the document excerpt and redact any private
+or living-person information.
+
+## License
+
+Foresight OCR source code is licensed under the
+[Apache License 2.0](LICENSE). Document-derived screenshots, benchmark
+transcriptions, and other corpus material may also be subject to rights in the
+underlying source documents; confirm those rights before redistributing them.

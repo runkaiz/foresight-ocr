@@ -16,10 +16,10 @@ import sqlite3
 
 import pytest
 
-from familyocr.persistence.db import init_schema
-from familyocr.regions import store
-from familyocr.regions.model import RegionState, geometry_hash
-from familyocr.regions.reconcile import (
+from foresight_ocr.persistence.db import init_schema
+from foresight_ocr.regions import store
+from foresight_ocr.regions.model import RegionState
+from foresight_ocr.regions.reconcile import (
     MATCH_IOU,
     Proposal,
     interval_iou,
@@ -108,9 +108,14 @@ def test_running_the_same_segmentation_again_changes_nothing(conn):
     before = _uids(conn)
 
     report = _seed(conn)
-    assert (report.created, report.moved, report.retired, report.revived) == (0, 0, 0, 0)
+    assert (report.created, report.moved, report.retired, report.revived) == (
+        0,
+        0,
+        0,
+        0,
+    )
     assert report.unchanged == 3
-    assert _uids(conn) == before        # identity survives, so crops and answers do
+    assert _uids(conn) == before  # identity survives, so crops and answers do
 
 
 def test_reading_order_follows_the_page_right_to_left(conn):
@@ -155,7 +160,7 @@ def test_an_inserted_column_does_not_rename_its_neighbours(conn):
     report = reconcile_page(conn, DOC, PAGE, _proposals(extra))
 
     assert (report.created, report.moved, report.retired) == (1, 0, 0)
-    assert before < set(_uids(conn))     # the originals are all still themselves
+    assert before < set(_uids(conn))  # the originals are all still themselves
 
 
 def test_a_column_the_detector_stops_seeing_is_withdrawn_not_erased(conn):
@@ -169,7 +174,7 @@ def test_a_column_the_detector_stops_seeing_is_withdrawn_not_erased(conn):
     row = conn.execute(
         "SELECT deleted_at FROM regions WHERE region_uid = ?", (dropped,)
     ).fetchone()
-    assert row["deleted_at"] is not None   # kept, because answers were read from it
+    assert row["deleted_at"] is not None  # kept, because answers were read from it
 
 
 def test_a_column_that_comes_back_comes_back_as_itself(conn):
@@ -181,6 +186,39 @@ def test_a_column_that_comes_back_comes_back_as_itself(conn):
     report = _seed(conn)
     assert report.revived == 1
     assert dropped in _uids(conn)
+
+
+def test_a_live_adjusted_replacement_wins_over_an_exact_tombstone(conn):
+    """A rerun must not restore a historical duplicate beside a human edit.
+
+    A half-phase repair can replace a machine region rather than move it when
+    overlap falls below the identity threshold.  The new adjusted row and the
+    retired machine row then have identical geometry.  The live edit owns that
+    proposal; insertion order must not resurrect the older tombstone.
+    """
+    _seed(conn)
+    old = _live(conn)[1]
+    store.retire(conn, old)
+    replacement = store.create_region(
+        conn,
+        DOC,
+        PAGE,
+        old.bbox,
+        band_label=old.band_label,
+        band_ordinal=old.band_ordinal,
+        reading_order=old.reading_order,
+        entry_index=old.entry_index,
+        state=RegionState.ADJUSTED,
+        created_by="reviewer",
+    )
+
+    report = _seed(conn)
+
+    assert report.revived == 0
+    assert replacement.region_uid in _uids(conn)
+    assert old.region_uid not in _uids(conn)
+    assert len(_live(conn)) == len(COLUMNS)
+    assert report.links[(0, 1)] == replacement.id
 
 
 # --------------------------------------------------------------------------
@@ -224,7 +262,7 @@ def test_the_disagreement_is_recorded_so_it_can_be_offered(conn):
         "SELECT kind, bbox_json, iou FROM region_proposals WHERE kind='divergence'"
     ).fetchone()
     assert row is not None
-    assert json.loads(row["bbox_json"]) == COLUMNS[1][1]   # what the machine wanted
+    assert json.loads(row["bbox_json"]) == COLUMNS[1][1]  # what the machine wanted
     assert row["iou"] > MATCH_IOU
 
 
@@ -237,9 +275,12 @@ def test_an_edited_region_nothing_proposes_is_kept_and_reported(conn):
     assert report.retired == 0
     assert uid in report.orphaned
     assert uid in _uids(conn)
-    assert conn.execute(
-        "SELECT COUNT(*) FROM region_proposals WHERE kind='orphan_region'"
-    ).fetchone()[0] == 1
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM region_proposals WHERE kind='orphan_region'"
+        ).fetchone()[0]
+        == 1
+    )
 
 
 def test_an_edit_that_agrees_with_the_machine_raises_nothing(conn):
@@ -249,10 +290,10 @@ def test_an_edit_that_agrees_with_the_machine_raises_nothing(conn):
     store.set_geometry(conn, uid, COLUMNS[1][1], state=RegionState.VERIFIED)
 
     report = _seed(conn)
-    assert report.divergent == [uid]     # reported as pinned…
-    assert conn.execute(
-        "SELECT COUNT(*) FROM region_proposals"
-    ).fetchone()[0] == 0                 # …but there is nothing to disagree about
+    assert report.divergent == [uid]  # reported as pinned…
+    assert (
+        conn.execute("SELECT COUNT(*) FROM region_proposals").fetchone()[0] == 0
+    )  # …but there is nothing to disagree about
 
 
 # --------------------------------------------------------------------------
@@ -268,8 +309,10 @@ def test_a_rerun_renumbers_reading_order_from_the_page(conn):
 
 def test_a_rerun_does_not_overrule_an_order_somebody_set(conn):
     _seed(conn)
-    conn.execute("UPDATE regions SET reading_order_locked = 1, reading_order = 9 "
-                 "WHERE reading_order = 0")
+    conn.execute(
+        "UPDATE regions SET reading_order_locked = 1, reading_order = 9 "
+        "WHERE reading_order = 0"
+    )
     report = _seed(conn)
     assert "庶" in report.order_locked
     assert 9 in [r.reading_order for r in _live(conn)]
@@ -289,7 +332,11 @@ def test_a_dry_run_reports_the_same_thing_and_writes_nothing(conn):
     assert [(r.region_uid, r.bbox) for r in _live(conn)] == before
 
     wet = reconcile_page(conn, DOC, PAGE, _proposals(shifted))
-    assert (wet.moved, wet.created, wet.retired) == (dry.moved, dry.created, dry.retired)
+    assert (wet.moved, wet.created, wet.retired) == (
+        dry.moved,
+        dry.created,
+        dry.retired,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -388,14 +435,15 @@ def test_an_answer_is_still_readable_after_the_page_is_segmented_again(conn):
 
     found = conn.execute(
         "SELECT COUNT(*) FROM regions r JOIN ocr_candidates oc ON oc.region_id = r.id "
-        "WHERE r.document_id = ? AND r.deleted_at IS NULL", (DOC,)
+        "WHERE r.document_id = ? AND r.deleted_at IS NULL",
+        (DOC,),
     ).fetchone()[0]
     assert found == 3
 
 
 def test_the_breadcrumb_is_re_aimed_at_the_new_crop_rows(conn):
     """Readers that still go through the crop row keep working."""
-    from familyocr.cli.main import _repoint_breadcrumbs
+    from foresight_ocr.cli.main import _repoint_breadcrumbs
 
     _seed(conn)
     regions = [r.id for r in _live(conn)]

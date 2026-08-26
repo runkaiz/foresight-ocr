@@ -1,0 +1,241 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and verify Python distributions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install project and release tools
+        run: uv sync --frozen --extra dev --extra release --extra audit
+      - name: Verify tag and package versions
+        run: uv run python scripts/check_version.py
+      - name: Verify wheels for every supported platform
+        run: uv run python scripts/check_platform_wheels.py
+      - name: Run static quality and security checks
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy src/foresight_ocr
+          uv run mypy --platform win32 src/foresight_ocr
+          uv run bandit -q -ll -r src/foresight_ocr scripts runners -x tests
+      - name: Audit public tree, history, secrets, and publication decisions
+        run: |
+          uv run python scripts/audit_public_release.py
+          uv run python scripts/audit_secrets.py
+      - name: Run the full test suite
+        run: uv run pytest -q --cov=foresight_ocr --cov-branch --cov-report=term-missing
+      - name: Audit locked dependencies
+        run: uv run pip-audit
+      - name: Build and inspect distributions
+        run: |
+          uv build
+          uv run twine check dist/foresight_ocr-*.whl dist/foresight_ocr-*.tar.gz
+          uv run python scripts/verify_release_artifacts.py
+      - name: Smoke-test an isolated wheel install
+        shell: bash
+        run: |
+          smoke_dir=$(mktemp -d)
+          uv venv --python 3.12 "$smoke_dir/venv"
+          uv pip install --python "$smoke_dir/venv/bin/python" dist/*.whl
+          uv run python scripts/smoke_cli_distribution.py \
+            "$smoke_dir/venv/bin/foresight-ocr"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  binaries:
+    name: Build standalone (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            artifact: "dist/foresight-ocr-*-linux-x86_64.tar.gz"
+          - os: ubuntu-22.04-arm
+            target: linux-arm64
+            artifact: "dist/foresight-ocr-*-linux-arm64.tar.gz"
+          - os: windows-2022
+            target: windows-x86_64
+            artifact: "dist/foresight-ocr-*-windows-x86_64.zip"
+          - os: macos-15-intel
+            target: macos-x86_64
+            artifact: "dist/foresight-ocr-*-macos-x86_64.tar.gz"
+          - os: macos-15
+            target: macos-arm64
+            artifact: "dist/foresight-ocr-*-macos-arm64.tar.gz"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install standalone build dependencies
+        run: uv sync --frozen --extra release
+      - name: Verify package version
+        run: uv run python scripts/check_version.py
+      - name: Import Apple Developer ID certificate
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+        run: |
+          if [[ -z "$APPLE_DEVELOPER_ID_P12" ]]; then
+            exit 0
+          fi
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/foresight-signing.keychain-db"
+          printf '%s' "$APPLE_DEVELOPER_ID_P12" | \
+            openssl base64 -d -A -out "$certificate"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          security import "$certificate" -P "$APPLE_DEVELOPER_ID_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "" "$keychain"
+          security list-keychains -d user -s "$keychain"
+      - name: Prepare Windows Authenticode certificate
+        if: startsWith(matrix.target, 'windows-')
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+        run: |
+          if (-not $env:WINDOWS_SIGNING_PFX) { exit 0 }
+          $certificate = Join-Path $env:RUNNER_TEMP "foresight-signing.pfx"
+          [IO.File]::WriteAllBytes(
+            $certificate,
+            [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX)
+          )
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Filter signtool.exe -Recurse |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signTool) { throw "Windows SDK signtool.exe was not found" }
+          "FORESIGHT_WINDOWS_CERTIFICATE=$certificate" >> $env:GITHUB_ENV
+          "FORESIGHT_SIGNTOOL=$($signTool.FullName)" >> $env:GITHUB_ENV
+      - name: Build, smoke-test, and archive standalone CLI
+        env:
+          FORESIGHT_MACOS_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
+          FORESIGHT_APPLE_ID: ${{ secrets.APPLE_NOTARY_ID }}
+          FORESIGHT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          FORESIGHT_APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          FORESIGHT_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+          FORESIGHT_WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: uv run python scripts/build_binary.py --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.target }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release-assets:
+    name: Attest and publish GitHub release assets
+    needs: [package, binaries]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "release-*"
+          path: dist
+          merge-multiple: true
+      - name: Verify the complete release set
+        shell: bash
+        run: |
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name 'foresight_ocr-*.tar.gz' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name 'foresight-ocr-*-linux-*.tar.gz' | wc -l)" -eq 2
+          test "$(find dist -maxdepth 1 -type f -name 'foresight-ocr-*-macos-*.tar.gz' | wc -l)" -eq 2
+          test "$(find dist -maxdepth 1 -type f -name 'foresight-ocr-*-windows-*.zip' | wc -l)" -eq 1
+          cd dist
+          sha256sum -- ./* > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Verify every standalone archive
+        run: >-
+          uv run --no-project --python 3.12
+          scripts/verify_standalone_archive.py
+          dist/foresight-ocr-*-linux-*.tar.gz
+          dist/foresight-ocr-*-macos-*.tar.gz
+          dist/foresight-ocr-*-windows-*.zip
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/*"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: complete-release
+          path: dist/
+          if-no-files-found: error
+      - name: Create GitHub release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag --generate-notes --title "Foresight OCR $GITHUB_REF_NAME"
+          fi
+
+  publish-pypi:
+    name: Publish Python distributions to PyPI
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [package, release-assets]
+    runs-on: ubuntu-22.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/foresight-ocr
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

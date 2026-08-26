@@ -1,7 +1,7 @@
 import math
 
-from familyocr.ocr.fields import parse_entry
-from familyocr.ocr.metrics import Pair, align, rare_characters, score_pairs
+from foresight_ocr.ocr.fields import parse_entry
+from foresight_ocr.ocr.metrics import Pair, align, rare_characters, score_pairs
 
 
 def test_parse_entry_splits_the_three_printed_fields():
@@ -104,7 +104,13 @@ def test_bare_zi_is_an_only_son_and_ranks_first():
 
 def test_order_ranks():
     ranks = {
-        "長子": 1, "元子": 1, "次子": 2, "三子": 3, "四子": 4, "子": 1, "女": 1,
+        "長子": 1,
+        "元子": 1,
+        "次子": 2,
+        "三子": 3,
+        "四子": 4,
+        "子": 1,
+        "女": 1,
     }
     for marker, rank in ranks.items():
         e = parse_entry(f"庶一{marker}", own_label="庶")
@@ -126,11 +132,12 @@ def test_a_numbered_father_is_not_mistaken_for_a_name():
     assert e.parent_name is None
 
 
-def test_long_leftover_is_not_treated_as_a_name():
-    # Watermark bleed-through must not be promoted to a father's name.
+def test_watermark_bleed_through_is_ignored_not_promoted_to_a_name():
     e = parse_entry("教三百一書館圖書館長子", own_label="教")
     assert e.parent_name is None
-    assert e.leftover
+    assert e.leftover == ""
+    assert e.watermark_noise == ["圖書館", "書館"]
+    assert e.text == "教三百一書館圖書館長子"
 
 
 def test_variant_band_label_is_recorded_not_silently_folded():
@@ -152,7 +159,7 @@ def test_band_label_can_come_from_geometry_when_the_glyph_blurs():
     assert e.own_id == "庶三百四十"
     assert e.label_from_geometry is True
     assert e.observed_label == "庚"
-    assert e.text == "庚三百四十允二百十九子"      # raw transcription untouched
+    assert e.text == "庚三百四十允二百十九子"  # raw transcription untouched
 
 
 def test_geometry_label_is_off_by_default():
@@ -181,7 +188,7 @@ def test_numeral_confusable_is_repaired_and_recorded():
     e = parse_entry("庶干十四允五百六十一子", own_label="庶", trust_band=True)
     assert e.own_id == "庶千十四"
     assert e.numeral_repairs == {"干": "千"}
-    assert e.text == "庶干十四允五百六十一子"      # raw transcription untouched
+    assert e.text == "庶干十四允五百六十一子"  # raw transcription untouched
 
 
 def test_no_repair_recorded_when_none_was_needed():

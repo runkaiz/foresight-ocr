@@ -1,4 +1,4 @@
-from familyocr.validation.sequence import Observation, check_sequence
+from foresight_ocr.validation.sequence import Observation, check_sequence
 
 
 def obs(page, entry, text, band="庶"):
@@ -6,9 +6,13 @@ def obs(page, entry, text, band="庶"):
 
 
 def test_clean_run_has_no_findings():
-    reports = check_sequence([
-        obs(2, 0, "庶一"), obs(2, 1, "庶二"), obs(3, 0, "庶三"),
-    ])
+    reports = check_sequence(
+        [
+            obs(2, 0, "庶一"),
+            obs(2, 1, "庶二"),
+            obs(3, 0, "庶三"),
+        ]
+    )
     r = reports["庶"]
     assert r.findings == []
     assert r.clean_run_rate == 1.0
@@ -36,9 +40,13 @@ def test_duplicate_is_reported():
 
 
 def test_unparsed_entries_do_not_break_the_run():
-    reports = check_sequence([
-        obs(2, 0, "庶一"), obs(2, 1, "庶??"), obs(2, 2, "庶二"),
-    ])
+    reports = check_sequence(
+        [
+            obs(2, 0, "庶一"),
+            obs(2, 1, "庶??"),
+            obs(2, 2, "庶二"),
+        ]
+    )
     r = reports["庶"]
     assert r.observed == 3 and r.parsed == 2
     assert [f.kind for f in r.findings] == ["unparsed"]
@@ -48,10 +56,14 @@ def test_unparsed_entries_do_not_break_the_run():
 
 
 def test_bands_are_validated_independently():
-    reports = check_sequence([
-        obs(2, 0, "庶一"), obs(2, 0, "富一", band="富"),
-        obs(2, 1, "庶二"), obs(2, 1, "富九", band="富"),
-    ])
+    reports = check_sequence(
+        [
+            obs(2, 0, "庶一"),
+            obs(2, 0, "富一", band="富"),
+            obs(2, 1, "庶二"),
+            obs(2, 1, "富九", band="富"),
+        ]
+    )
     assert reports["庶"].findings == []
     assert [f.kind for f in reports["富"].findings] == ["gap"]
 

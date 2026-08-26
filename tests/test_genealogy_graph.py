@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from familyocr.context import set_profile
-from familyocr.document.profile import DocumentProfile
-from familyocr.genealogy import build_entries, build_graph, person_key
-from familyocr.genealogy.graph import named_father_key
+from foresight_ocr.context import set_profile
+from foresight_ocr.document.profile import DocumentProfile
+from foresight_ocr.genealogy import build_entries, build_graph, person_key
+from foresight_ocr.genealogy.graph import named_father_key
 
 PROFILE = DocumentProfile(
     document_id="test",
@@ -27,8 +27,14 @@ def _profile():
 def _rows(*specs):
     """specs: (page, band_index, entry_index, text)"""
     return [
-        {"region_uid": f"uid{i}", "page_index": p, "band_index": b,
-         "entry_index": e, "text": t, "source": "ocr"}
+        {
+            "region_uid": f"uid{i}",
+            "page_index": p,
+            "band_index": b,
+            "entry_index": e,
+            "text": t,
+            "source": "ocr",
+        }
         for i, (p, b, e, t) in enumerate(specs)
     ]
 
@@ -44,7 +50,7 @@ def test_a_numbered_father_resolves_to_his_record():
         (1, 1, 0, "富十二 庶三十五 次子"),
     )
     assert g.people == 2
-    assert g.link_status["resolved"] == 1        # 富十二 -> 庶三十五
+    assert g.link_status["resolved"] == 1  # 富十二 -> 庶三十五
     assert g.link_status["outside_volume"] == 1  # 庶's father 允 is not in this volume
 
 

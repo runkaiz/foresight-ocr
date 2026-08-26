@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""PP-OCRv5 runner. Runs inside .venv-paddle; must not import familyocr.
+"""PP-OCRv5 runner. Runs inside .venv-paddle; must not import foresight-ocr.
 
 Usage:
     python ppocr_v5.py --probe
@@ -62,7 +62,9 @@ def main(manifest_path: str, out_path: str) -> int:
             out = ocr.predict(img)
             texts, scores, polys = [], [], []
             for page in out:
-                data = page.json.get("res", page.json) if hasattr(page, "json") else page
+                data = (
+                    page.json.get("res", page.json) if hasattr(page, "json") else page
+                )
                 texts.extend(data.get("rec_texts", []) or [])
                 scores.extend(data.get("rec_scores", []) or [])
                 polys.extend(data.get("rec_polys", data.get("dt_polys", [])) or [])
@@ -70,43 +72,57 @@ def main(manifest_path: str, out_path: str) -> int:
             # Reading order is top-to-bottom within a vertical column, and
             # right-to-left when a crop happens to span more than one column.
             if polys and len(polys) == len(texts):
-                def _key(i):
-                    poly = np.asarray(polys[i], dtype=float).reshape(-1, 2)
+                orientation = item.get("orientation", "vertical")
+                image_width = img.shape[1]
+
+                def _key(i, *, boxes=polys, direction=orientation, width=image_width):
+                    poly = np.asarray(boxes[i], dtype=float).reshape(-1, 2)
                     cx, cy = poly[:, 0].mean(), poly[:, 1].mean()
-                    if item.get("orientation", "vertical") == "vertical":
+                    if direction == "vertical":
                         # Group into columns first (widest gap dominates), then
                         # order top-to-bottom inside each.
-                        return (-round(cx / max(img.shape[1] * 0.25, 1)), cy)
+                        return (-round(cx / max(width * 0.25, 1)), cy)
                     return (cy, cx)
 
                 order = sorted(range(len(texts)), key=_key)
                 texts = [texts[i] for i in order]
-                scores = [scores[i] for i in order] if len(scores) == len(order) else scores
+                scores = (
+                    [scores[i] for i in order] if len(scores) == len(order) else scores
+                )
 
             transcription = "".join(texts) if texts else None
             confidence = float(np.mean(scores)) if scores else None
-            results.append({
-                "crop_id": crop_id,
-                "transcription": transcription,
-                "confidence": confidence,
-                # PP-OCR reports per-line scores, not per-character ones.
-                "characters": [],
-                "latency_ms": (time.perf_counter() - started) * 1000.0,
-                "error": None if transcription else "no text detected",
-                "raw": {"rec_texts": texts, "rec_scores": [float(s) for s in scores]},
-            })
+            results.append(
+                {
+                    "crop_id": crop_id,
+                    "transcription": transcription,
+                    "confidence": confidence,
+                    # PP-OCR reports per-line scores, not per-character ones.
+                    "characters": [],
+                    "latency_ms": (time.perf_counter() - started) * 1000.0,
+                    "error": None if transcription else "no text detected",
+                    "raw": {
+                        "rec_texts": texts,
+                        "rec_scores": [float(s) for s in scores],
+                    },
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - one bad crop must not stop the batch
-            results.append({
-                "crop_id": crop_id, "transcription": None, "confidence": None,
-                "characters": [],
-                "latency_ms": (time.perf_counter() - started) * 1000.0,
-                "error": f"{type(exc).__name__}: {exc}", "raw": None,
-            })
+            results.append(
+                {
+                    "crop_id": crop_id,
+                    "transcription": None,
+                    "confidence": None,
+                    "characters": [],
+                    "latency_ms": (time.perf_counter() - started) * 1000.0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "raw": None,
+                }
+            )
 
     Path(out_path).write_text(
         json.dumps(
-            {"model_version": f"paddleocr-{paddleocr.__version__}",
-             "results": results},
+            {"model_version": f"paddleocr-{paddleocr.__version__}", "results": results},
             ensure_ascii=False,
         ),
         encoding="utf-8",

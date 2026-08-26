@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: windows-2022
+            target: windows-x86_64
+          - os: macos-15-intel
+            target: macos-x86_64
+          - os: macos-15
+            target: macos-arm64
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install project
+        run: uv sync --frozen --extra dev
+      - name: Run tests
+        run: uv run pytest -q --cov=foresight_ocr --cov-branch --cov-report=term-missing
+      - name: Smoke-test CLI
+        run: uv run python scripts/smoke_cli_distribution.py
+
+  package:
+    name: Verify Python distributions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install release tools
+        run: uv sync --frozen --extra dev --extra release --extra audit
+      - name: Check version contract
+        run: uv run python scripts/check_version.py
+      - name: Verify wheels for every supported platform
+        run: uv run python scripts/check_platform_wheels.py
+      - name: Run static quality and security checks
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy src/foresight_ocr
+          uv run mypy --platform win32 src/foresight_ocr
+          uv run bandit -q -ll -r src/foresight_ocr scripts runners -x tests
+      - name: Audit public tree and Git history
+        run: |
+          uv run python scripts/audit_public_release.py --technical-only
+          uv run python scripts/audit_secrets.py
+      - name: Build distribution
+        run: uv build
+      - name: Check metadata and artifact contents
+        run: |
+          uv run twine check dist/foresight_ocr-*.whl dist/foresight_ocr-*.tar.gz
+          uv run python scripts/verify_release_artifacts.py
+      - name: Audit locked dependencies
+        run: uv run pip-audit
+
+  minimum-dependencies:
+    name: Test minimum supported dependencies
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Create minimum-dependency environment
+        shell: bash
+        run: |
+          uv venv --python 3.12 .venv-minimum
+          uv pip install --python .venv-minimum/bin/python \
+            --resolution lowest-direct '.[dev]'
+      - name: Run tests against minimum versions
+        run: .venv-minimum/bin/pytest -q

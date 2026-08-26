@@ -8,19 +8,17 @@ band_edges:
 - 3025.0
 band_edge_mad:
 - 0.0
-- 4.488718264492036
+- 4.481185066092223
 - 5.411118151481446
 - 0.0
 column_pitch: 378.0
 column_pitch_mad: 2.0
 text_left: 0.0
 text_right: 2295.5
-pages_used: 198
+pages_used: 200
 layout_families:
   outlier:
   - 1
-  - 10
-  - 181
   layout_A:
   - 2
   - 3
@@ -30,6 +28,7 @@ layout_families:
   - 7
   - 8
   - 9
+  - 10
   - 11
   - 12
   - 13
@@ -200,6 +199,7 @@ layout_families:
   - 178
   - 179
   - 180
+  - 181
   - 182
   - 183
   - 184
@@ -220,3 +220,29 @@ layout_families:
   - 199
   - 200
   - 201
+# Verified title-page structure; the layout generator preserves this override.
+page_overrides:
+  2:
+    entry_boundaries:
+    - 1699.0
+    - 1337.5
+    - 959.5
+    - 581.5
+    - 203.5
+    band_headers:
+    - kind: section_title
+      x0: 1761.0
+      x1: 1872.0
+    - kind: generation_title
+      x0: 1872.0
+      x1: 2044.5
+    page_headers:
+    - kind: document_title
+      band_index: 0
+      x0: 2044.5
+      x1: 2237.5
+      y0: 0.0
+      y1: 2002.0
+# Verified book-wide sub-column orientation and its learned right-edge landmark.
+entry_phase_fraction: -0.5
+entry_phase_anchor_x: 2096.5

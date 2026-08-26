@@ -267,8 +267,7 @@ Example:
 
 ```python
 class ComputeBackend(Protocol):
-    def execute(self, job: InferenceJob) -> InferenceResult:
-        ...
+    def execute(self, job: InferenceJob) -> InferenceResult: ...
 ```
 
 Possible implementations:
@@ -292,12 +291,7 @@ Example:
 
 ```python
 class OCRBackend(Protocol):
-    def recognize(
-        self,
-        image,
-        options=None
-    ) -> OCRResult:
-        ...
+    def recognize(self, image, options=None) -> OCRResult: ...
 ```
 
 Potential backends:
@@ -1042,21 +1036,21 @@ Pipeline stages should be individually rerunnable.
 Conceptually:
 
 ```bash
-familyocr inspect document.pdf
-familyocr extract DOCUMENT
-familyocr normalize DOCUMENT
-familyocr restore DOCUMENT
-familyocr layout DOCUMENT
-familyocr segment DOCUMENT
-familyocr ocr DOCUMENT
-familyocr resolve DOCUMENT
-familyocr parse DOCUMENT
+foresight-ocr inspect document.pdf
+foresight-ocr extract DOCUMENT
+foresight-ocr normalize DOCUMENT
+foresight-ocr restore DOCUMENT
+foresight-ocr layout DOCUMENT
+foresight-ocr segment DOCUMENT
+foresight-ocr ocr DOCUMENT
+foresight-ocr resolve DOCUMENT
+foresight-ocr parse DOCUMENT
 ```
 
 and eventually:
 
 ```bash
-familyocr run DOCUMENT
+foresight-ocr run DOCUMENT
 ```
 
 Changing OCR models must not require repeating PDF extraction or layout analysis.
@@ -1198,11 +1192,11 @@ Create a representative fixture set instead of processing the whole book during 
 A reasonable starting structure:
 
 ```text
-familyocr/
+foresight-ocr/
 ├── README.md
 ├── pyproject.toml
 ├── src/
-│   └── familyocr/
+│   └── foresight_ocr/
 │       ├── document/
 │       ├── imaging/
 │       ├── layout/

@@ -114,3 +114,8 @@ all three version declarations together, tag that exact commit as `vX.Y.Z`, and
 push the tag. The tag workflow rebuilds and tests all assets, publishes a GitHub
 release with checksums and provenance attestations, and sends only the wheel and
 source distribution to PyPI through the protected environment.
+
+A manual workflow run is a private release-candidate build: it uses the
+technical publication audit and never creates a GitHub release or publishes to
+PyPI. A tag run uses the complete audit and therefore fails until every author
+identity and corpus-derived asset decision in `PUBLICATION.toml` is resolved.

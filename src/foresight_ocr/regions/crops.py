@@ -25,6 +25,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
+from ..imaging.io import read_image, write_image
 from ..imaging.variants import VARIANTS, build_variant
 from ..ocr.cache import crop_key
 from ..project import Project
@@ -202,7 +203,7 @@ def ensure_crop(
         )
 
     out = project.crops_dir(region.document_id) / variant / f"{key}.png"
-    if out.exists() and cv2.imread(str(out), cv2.IMREAD_UNCHANGED) is not None:
+    if out.exists() and read_image(out, cv2.IMREAD_UNCHANGED) is not None:
         # A killed document job can leave a complete content-addressed crop on
         # disk while its surrounding SQLite transaction rolls back. Recover
         # that artifact instead of rebuilding the same page once per region.
@@ -233,7 +234,7 @@ def ensure_crop(
             reused=True,
         )
 
-    page = cv2.imread(str(page_path), cv2.IMREAD_COLOR)
+    page = read_image(page_path, cv2.IMREAD_COLOR)
     if page is None:
         # The failure mode is a truncated page left by a killed run, and it
         # otherwise surfaces as an attribute error on None far from the cause.
@@ -256,7 +257,7 @@ def ensure_crop(
             (sx0, sy0, sx1, sy1),
             stitched_width,
         ) = stitch
-        previous_page = cv2.imread(str(previous_path), cv2.IMREAD_COLOR)
+        previous_page = read_image(previous_path, cv2.IMREAD_COLOR)
         if previous_page is None:
             raise CropUnavailable(f"cannot read preceding page {previous_path}")
         previous_source = (
@@ -284,7 +285,7 @@ def ensure_crop(
             crop = np.concatenate([crop, previous_crop], axis=1)
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(out), crop):
+    if not write_image(out, crop):
         raise CropUnavailable(f"cannot write {out}")
 
     conn.execute(

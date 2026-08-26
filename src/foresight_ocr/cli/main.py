@@ -21,6 +21,7 @@ from rich.table import Table
 
 from foresight_ocr import __version__
 from foresight_ocr.document import extract_originals, inspect_pdf
+from foresight_ocr.imaging.io import read_image, write_image
 from foresight_ocr.persistence import connect, init_schema
 from foresight_ocr.project import InvalidDocumentId, Project, validate_document_id
 from foresight_ocr.provenance import ProcessingRun
@@ -396,7 +397,6 @@ def normalize(
     ),
 ) -> None:
     """Detect the printed page frame and warp pages into canonical space."""
-    import cv2
     import numpy as np
 
     from foresight_ocr.imaging.overlay import contact_sheet, draw_frame_overlay
@@ -577,7 +577,7 @@ def normalize(
                 )
                 if write_pages and norm.ok:
                     out = norm_dir / f"p{p.page_index:04d}.png"
-                    cv2.imwrite(str(out), warp_page(img, norm.forward, space))
+                    write_image(out, warp_page(img, norm.forward, space))
 
             caption = (
                 f"p{p.page_index}  {'OK' if norm.ok else 'FLAG'}\n"
@@ -648,7 +648,6 @@ def restore(
     ),
 ) -> None:
     """Benchmark watermark-suppression variants and write the comparison."""
-    import cv2
     import numpy as np
 
     from foresight_ocr.imaging.variants import VARIANTS, build_variant
@@ -710,12 +709,12 @@ def restore(
                 if write_variants:
                     vdir = project.pages_dir(document_id, f"variant_{name}")
                     vdir.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(str(vdir / f"p{a['page_index']:04d}.png"), var)
+                    write_image(vdir / f"p{a['page_index']:04d}.png", var)
             if box:
                 x, y, w, h = box
                 crops.insert(0, ("original", bgr[y : y + h, x : x + w]))
-                cv2.imwrite(
-                    str(out_dir / f"compare_p{a['page_index']:04d}.png"),
+                write_image(
+                    out_dir / f"compare_p{a['page_index']:04d}.png",
                     comparison_strip(crops),
                 )
             status.update(f"scoring {i}/{len(picked)}")
@@ -1019,7 +1018,6 @@ def segment(
     against the regions already there, so an edited box is kept and the
     detector's disagreement is recorded rather than applied.
     """
-    import cv2
     import yaml
 
     from foresight_ocr.imaging.variants import VARIANTS, build_variant
@@ -1291,7 +1289,7 @@ def segment(
                     vdir = crops_dir / vname
                     vdir.mkdir(parents=True, exist_ok=True)
                     out = vdir / f"{crop_id}.png"
-                    cv2.imwrite(str(out), crop)
+                    write_image(out, crop)
                     written += 1
                     if first_path is None:
                         first_path = out
@@ -1797,15 +1795,13 @@ def _core_run(values: set[int]) -> tuple[set[int], set[int]]:
 def _imread(path: Path, flags: int = 1):
     """Read an image, or say which file is unreadable and why it matters.
 
-    `cv2.imread` reports failure by returning None, so a truncated page — the
+    OpenCV reports failure by returning None, so a truncated page — the
     kind a killed run leaves behind — surfaces hundreds of lines later as
     `'NoneType' object has no attribute 'shape'`, naming neither the file nor
     the stage. Re-running the producing stage is the fix, so the message says
     so.
     """
-    import cv2
-
-    img = cv2.imread(str(path), flags)
+    img = read_image(path, flags)
     if img is None:
         raise typer.BadParameter(
             f"cannot read {path} — it is missing or truncated. "

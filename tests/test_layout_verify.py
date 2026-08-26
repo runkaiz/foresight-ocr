@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import numpy as np
 
+from foresight_ocr.imaging.io import write_image
 from foresight_ocr.layout.verify import LayoutVerification, check_phantoms, edge_bias
 
 
@@ -16,8 +16,8 @@ def test_check_phantoms_ignores_unreadable_files_and_reports_distribution(
     inked[:, 10:20] = 20
     blank_path = tmp_path / "blank.png"
     inked_path = tmp_path / "inked.png"
-    assert cv2.imwrite(str(blank_path), blank)
-    assert cv2.imwrite(str(inked_path), inked)
+    assert write_image(blank_path, blank)
+    assert write_image(inked_path, inked)
 
     phantoms, percentiles = check_phantoms(
         [blank_path, tmp_path / "missing.png", inked_path], threshold=0.02

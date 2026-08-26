@@ -12,10 +12,10 @@ enforced.
 
 import json
 
-import cv2
 import numpy as np
 import pytest
 
+from foresight_ocr.imaging.io import read_image, write_image
 from foresight_ocr.ocr import ondemand
 from foresight_ocr.ocr.base import OCRResult, register_backend
 from foresight_ocr.persistence.db import connect, init_schema
@@ -71,7 +71,7 @@ def page(tmp_path):
     normalized.mkdir(parents=True)
     image = np.full((1200, 2300, 3), 240, dtype=np.uint8)
     image[100:900, 1600:1900] = 30  # something for a crop to contain
-    cv2.imwrite(str(normalized / "p0058.png"), image)
+    assert write_image(normalized / "p0058.png", image)
 
     conn = connect(project.db_path)
     from foresight_ocr.persistence.db import init_schema
@@ -209,8 +209,8 @@ def test_right_edge_entry_stitches_preceding_pages_left_fragment(tmp_path):
     current = np.full((100, 100, 3), 240, dtype=np.uint8)
     previous[:, :20] = 40  # parent/order continuation on the prior scan
     current[:, 70:] = 80  # own-id fragment on the current scan
-    cv2.imwrite(str(normalized / "p0002.png"), previous)
-    cv2.imwrite(str(normalized / "p0003.png"), current)
+    assert write_image(normalized / "p0002.png", previous)
+    assert write_image(normalized / "p0003.png", current)
 
     conn = connect(project.db_path)
     init_schema(conn)
@@ -246,7 +246,7 @@ def test_right_edge_entry_stitches_preceding_pages_left_fragment(tmp_path):
     rendered = ensure_cross_page_previews(conn, project, DOC, 3, 100, variant="maxrgb")[
         0
     ]
-    pixels = cv2.imread(str(rendered.path), cv2.IMREAD_GRAYSCALE)
+    pixels = read_image(rendered.path, 0)
 
     assert prior.id is not None
     assert pixels.shape == (100, 50)
@@ -263,8 +263,8 @@ def test_inset_rightmost_entry_still_stitches_preceding_fragment(tmp_path):
     previous[:, :20] = 40
     current[:, 50:70] = 120  # extra left sub-column in the full current box
     current[:, 70:90] = 80  # right-hand piece that completes the seam entry
-    cv2.imwrite(str(normalized / "p0003.png"), previous)
-    cv2.imwrite(str(normalized / "p0004.png"), current)
+    assert write_image(normalized / "p0003.png", previous)
+    assert write_image(normalized / "p0004.png", current)
 
     conn = connect(project.db_path)
     init_schema(conn)
@@ -300,7 +300,7 @@ def test_inset_rightmost_entry_still_stitches_preceding_fragment(tmp_path):
     rendered = ensure_cross_page_previews(conn, project, DOC, 4, 100, variant="maxrgb")[
         0
     ]
-    pixels = cv2.imread(str(rendered.path), cv2.IMREAD_GRAYSCALE)
+    pixels = read_image(rendered.path, 0)
 
     assert pixels.shape == (100, 40)
     assert np.all(pixels[:, :20] == 80)
@@ -313,8 +313,8 @@ def test_stitch_skips_previous_page_without_unassigned_left_fragment(tmp_path):
     normalized.mkdir(parents=True)
     previous = np.full((100, 100, 3), 40, dtype=np.uint8)
     current = np.full((100, 100, 3), 80, dtype=np.uint8)
-    cv2.imwrite(str(normalized / "p0009.png"), previous)
-    cv2.imwrite(str(normalized / "p0010.png"), current)
+    assert write_image(normalized / "p0009.png", previous)
+    assert write_image(normalized / "p0010.png", current)
 
     conn = connect(project.db_path)
     init_schema(conn)

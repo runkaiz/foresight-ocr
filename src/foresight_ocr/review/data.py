@@ -38,6 +38,7 @@ import cv2
 
 from foresight_ocr.context import BAND_LABELS
 from foresight_ocr.export_order import entry_sort_key
+from foresight_ocr.imaging.io import read_image, write_image
 from foresight_ocr.imaging.variants import build_variant
 from foresight_ocr.ocr.watermarks import filter_watermark_text
 from foresight_ocr.provenance import sha256_bytes
@@ -553,7 +554,7 @@ def page_variant_image(
         / f"p{page_index:04d}_{checksum}.png"
     )
     if not out.exists():
-        source = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
+        source = read_image(source_path, cv2.IMREAD_COLOR)
         if source is None:
             raise CropUnavailable(
                 f"cannot read {source_path} — it is missing or truncated. "
@@ -561,10 +562,10 @@ def page_variant_image(
             )
         rendered = build_variant(source, variant)
         out.parent.mkdir(parents=True, exist_ok=True)
-        if not cv2.imwrite(str(out), rendered):
+        if not write_image(out, rendered):
             raise CropUnavailable(f"cannot write {out}")
 
-    review_image = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+    review_image = read_image(out, cv2.IMREAD_UNCHANGED)
     if review_image is None:
         raise CropUnavailable(f"cannot read generated review image {out}")
     height, width = review_image.shape[:2]

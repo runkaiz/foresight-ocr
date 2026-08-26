@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
+from foresight_ocr.imaging.io import read_image, write_image
 from foresight_ocr.imaging.overlay import (
     contact_sheet,
     draw_frame_overlay,
@@ -40,8 +41,10 @@ def test_geometry_overlays_and_contact_sheet_are_real_images(tmp_path: Path) -> 
         scale=0.5,
     )
 
-    assert cv2.imread(str(frame)).shape == (60, 100, 3)
-    assert cv2.imread(str(grid)).shape == (60, 100, 3)
+    frame_image = read_image(frame)
+    grid_image = read_image(grid)
+    assert frame_image is not None and frame_image.shape == (60, 100, 3)
+    assert grid_image is not None and grid_image.shape == (60, 100, 3)
 
     sheet = contact_sheet(
         [frame, tmp_path / "missing.png", grid],
@@ -49,7 +52,20 @@ def test_geometry_overlays_and_contact_sheet_are_real_images(tmp_path: Path) -> 
         cols=2,
         cell=(50, 30),
     )
-    assert cv2.imread(str(sheet)).shape == (60, 100, 3)
+    sheet_image = read_image(sheet)
+    assert sheet_image is not None and sheet_image.shape == (60, 100, 3)
+
+
+def test_image_io_round_trips_a_unicode_path(tmp_path: Path) -> None:
+    path = tmp_path / "丙辰庶富教9" / "正規化" / "p0058.png"
+    path.parent.mkdir(parents=True)
+    expected = np.full((9, 7, 3), [12, 34, 56], dtype=np.uint8)
+
+    assert write_image(path, expected)
+    actual = read_image(path)
+
+    assert actual is not None
+    assert np.array_equal(actual, expected)
 
     with pytest.raises(ValueError, match="no images"):
         contact_sheet([], tmp_path / "empty.png")

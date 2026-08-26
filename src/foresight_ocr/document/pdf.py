@@ -18,6 +18,7 @@ from typing import Iterator, cast
 import pikepdf
 from PIL import Image
 
+from foresight_ocr.imaging.io import read_image, write_image
 from foresight_ocr.project import validate_document_id
 from foresight_ocr.provenance import sha256_bytes, sha256_file
 
@@ -229,13 +230,14 @@ def _decode_to_png(raw_path: Path, decoded_path: Path) -> None:
 
     import cv2
 
-    img = cv2.imread(str(raw_path), cv2.IMREAD_UNCHANGED)
+    img = read_image(raw_path, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise OSError(
             f"{raw_path} could not be decoded by Pillow ({first_error}) or "
             f"OpenJPEG; the embedded scan is unrecoverable."
         ) from first_error
-    cv2.imwrite(str(decoded_path), img)
+    if not write_image(decoded_path, img):
+        raise OSError(f"could not write decoded image to {decoded_path}")
 
 
 def extract_originals(

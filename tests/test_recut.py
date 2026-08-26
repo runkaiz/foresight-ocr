@@ -15,10 +15,10 @@ import json
 import sqlite3
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
 
+from foresight_ocr.imaging.io import write_image
 from foresight_ocr.persistence.db import init_schema
 from foresight_ocr.project import Project
 from foresight_ocr.regions import store
@@ -272,7 +272,7 @@ def test_shift_without_reocr_materializes_crops_for_the_applied_geometry(tmp_pat
     normalized.mkdir(parents=True)
     image = np.full((120, 240, 3), 240, dtype=np.uint8)
     image[:, 20:225] = 30
-    assert cv2.imwrite(str(normalized / "p0003.png"), image)
+    assert write_image(normalized / "p0003.png", image)
 
     conn = _db()
     conn.execute(

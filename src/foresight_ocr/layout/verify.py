@@ -25,6 +25,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from foresight_ocr.imaging.io import read_image
+
 HEADER_RE = re.compile("字第|第[一二三四五六七八九十百]+世|雁序圖|宗譜")
 
 
@@ -60,7 +62,7 @@ def check_phantoms(
 
     coverage: list[tuple[float, str]] = []
     for path in crop_paths:
-        gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        gray = read_image(path, cv2.IMREAD_GRAYSCALE)
         if gray is None:
             continue
         # Threshold relative to the crop's own tone: paper brightness drifts

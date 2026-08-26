@@ -19,12 +19,12 @@ from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 
-import cv2
 import numpy as np
 import pytest
 
 from foresight_ocr.context import set_profile
 from foresight_ocr.document.profile import DocumentProfile
+from foresight_ocr.imaging.io import read_image, write_image
 from foresight_ocr.ocr.base import OCRResult, register_backend
 from foresight_ocr.ocr.learning import analyze_corrections
 from foresight_ocr.persistence.db import connect, init_schema
@@ -931,16 +931,18 @@ def test_page_variant_suppresses_cyan_without_changing_source(tmp_path):
     source[20:30, 20:30] = (30, 30, 30)  # neutral ink
     source[30:35, 5:15] = (180, 180, 180)  # neutral-gray logo
     source_path = pages / "p0058.png"
-    cv2.imwrite(str(source_path), source)
+    assert write_image(source_path, source)
 
     rendered = page_variant_image(conn, "doc", 58, project)
-    pixels = cv2.imread(rendered.path, cv2.IMREAD_GRAYSCALE)
+    pixels = read_image(Path(rendered.path), 0)
 
     assert (rendered.width, rendered.height) == (50, 40)
     assert pixels[8, 8] == 255
     assert pixels[25, 25] == 0
     assert pixels[32, 8] == 255
-    assert cv2.imread(str(source_path))[8, 8].tolist() == [255, 255, 0]
+    original = read_image(source_path)
+    assert original is not None
+    assert original[8, 8].tolist() == [255, 255, 0]
     assert page_variant_image(conn, "doc", 58, project).path == rendered.path
 
 
@@ -952,7 +954,7 @@ def test_page_reocr_uses_watermark_variant_and_preserves_human_correction(tmp_pa
     pages.mkdir(parents=True)
     image = np.full((1000, 1400, 3), 240, dtype=np.uint8)
     image[:, 700:1300] = 30
-    cv2.imwrite(str(pages / "p0058.png"), image)
+    assert write_image(pages / "p0058.png", image)
     save_correction(conn, "doc", 58, "庶", 0, "人工校对")
     ReviewFakeRecognizer.calls = []
 
@@ -997,7 +999,7 @@ def test_document_reocr_reports_page_progress_and_preserves_corrections(tmp_path
     pages.mkdir(parents=True)
     image = np.full((1000, 1400, 3), 240, dtype=np.uint8)
     image[:, 700:1300] = 30
-    cv2.imwrite(str(pages / "p0058.png"), image)
+    assert write_image(pages / "p0058.png", image)
     save_correction(conn, "doc", 58, "庶", 0, "人工校对")
     ReviewFakeRecognizer.calls = []
 

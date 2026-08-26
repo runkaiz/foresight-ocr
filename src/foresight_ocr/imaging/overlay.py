@@ -11,6 +11,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .io import read_image, write_image
+
 BGR = tuple[int, int, int]
 GREEN: BGR = (60, 200, 60)
 RED: BGR = (40, 40, 220)
@@ -77,7 +79,7 @@ def draw_frame_overlay(
             )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_path), canvas)
+    write_image(out_path, canvas)
     return out_path
 
 
@@ -127,7 +129,7 @@ def draw_grid_overlay(
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_path), canvas)
+    write_image(out_path, canvas)
     return out_path
 
 
@@ -140,12 +142,12 @@ def contact_sheet(
     rows = (len(paths) + cols - 1) // cols
     sheet = np.full((rows * cell[1], cols * cell[0], 3), 245, dtype=np.uint8)
     for i, p in enumerate(paths):
-        img = cv2.imread(str(p))
+        img = read_image(p)
         if img is None:
             continue
         img = cv2.resize(img, cell, interpolation=cv2.INTER_AREA)
         r, c = divmod(i, cols)
         sheet[r * cell[1] : (r + 1) * cell[1], c * cell[0] : (c + 1) * cell[0]] = img
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_path), sheet)
+    write_image(out_path, sheet)
     return out_path

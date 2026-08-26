@@ -59,7 +59,8 @@ def _assert_pipeline(root: Path) -> None:
     if len(crops) != 36:
         raise SystemExit(f"expected 36 structural crops; found {len(crops)}")
 
-    with sqlite3.connect(root / "artifacts/foresight-ocr.db") as connection:
+    connection = sqlite3.connect(root / "artifacts/foresight-ocr.db")
+    try:
         region_count = connection.execute(
             "SELECT COUNT(*) FROM regions WHERE document_id = 'ruled'"
         ).fetchone()
@@ -68,6 +69,11 @@ def _assert_pipeline(root: Path) -> None:
             "JOIN page_layouts p ON p.id = b.page_layout_id "
             "WHERE p.document_id = 'ruled'"
         ).fetchone()
+    finally:
+        # sqlite3.Connection's context manager commits or rolls back but does
+        # not close the handle. Windows will not remove the temporary project
+        # while that database file remains open.
+        connection.close()
     if region_count != (36,) or band_count != (3,):
         raise SystemExit(
             f"unexpected structural database counts: regions={region_count}, "
@@ -76,6 +82,14 @@ def _assert_pipeline(root: Path) -> None:
 
 
 def main() -> int:
+    # Child commands already emit UTF-8. Match the parent streams explicitly so
+    # captured Rich output can be replayed on Windows consoles whose inherited
+    # code page is otherwise CP1252.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "executable",

@@ -4,30 +4,32 @@ max_history_blob_bytes = 10000000
 
 # Store reviewed email addresses as SHA-256 digests of the lowercase address.
 # This lets the audit detect a new author identity without copying addresses into
-# the public policy file. This list stays empty until the repository owner has
-# explicitly approved the identity already present in Git history.
-reviewed_author_email_sha256 = []
+# the public policy file. Entries are added only after the repository owner has
+# explicitly approved the corresponding identity in Git history.
+reviewed_author_email_sha256 = [
+    "2d0789d9b53aa9a1d4c93708511210283f8cb8c0f7b04785a42fdef22dbba944",
+]
 
 [[asset_review]]
 name = "corpus screenshots"
 globs = ["docs/screenshots/*"]
-decision = "pending"
-license_expression = ""
-rights_basis = ""
+decision = "approved"
+license_expression = "NOASSERTION"
+rights_basis = "Repository owner approved publication on 2026-08-26; no separate redistribution license is asserted."
 
 [[asset_review]]
 name = "human-verified genealogy transcriptions"
 globs = ["benchmarks/gold/*.tsv"]
-decision = "pending"
-license_expression = ""
-rights_basis = ""
+decision = "approved"
+license_expression = "NOASSERTION"
+rights_basis = "Repository owner approved publication on 2026-08-26; no separate redistribution license is asserted."
 
 [[asset_review]]
 name = "document-specific profiles and learned templates"
 globs = ["configs/*.yaml"]
-decision = "pending"
-license_expression = ""
-rights_basis = ""
+decision = "approved"
+license_expression = "NOASSERTION"
+rights_basis = "Repository owner approved publication on 2026-08-26; no separate redistribution license is asserted."
 
 [[asset_review]]
 name = "corpus-derived reports and tutorial"
@@ -37,9 +39,9 @@ globs = [
     "docs/ocr-benchmark.md",
     "get-started.md",
 ]
-decision = "pending"
-license_expression = ""
-rights_basis = ""
+decision = "approved"
+license_expression = "NOASSERTION"
+rights_basis = "Repository owner approved publication on 2026-08-26; no separate redistribution license is asserted."
 
 [gitleaks]
 version = "8.30.1"

@@ -189,7 +189,7 @@ def _verify_wheel(path: Path, project: dict, version: str) -> None:
             raise AssertionError("wheel metadata does not declare its import name")
         entry_points = archive.read(f"{dist_info}/entry_points.txt").decode("utf-8")
         expected_entry = (
-            "[console_scripts]\nforesight-ocr = foresight_ocr.cli.main:app\n"
+            "[console_scripts]\nforesight-ocr = foresight_ocr.cli.main:main\n"
         )
         if entry_points != expected_entry:
             raise AssertionError(f"unexpected console entry points: {entry_points!r}")

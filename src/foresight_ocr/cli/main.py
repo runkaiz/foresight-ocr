@@ -8,6 +8,7 @@ through artifacts on disk and rows in SQLite.
 from __future__ import annotations
 
 import json
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from functools import wraps
@@ -35,6 +36,20 @@ def _version(value: bool) -> None:
 
 app = typer.Typer(add_completion=False, help="Chinese genealogy OCR pipeline.")
 console = Console()
+
+
+def _configure_utf8_stdio() -> None:
+    """Keep Unicode CLI output usable under legacy Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
+def main() -> None:
+    """Run the CLI after normalizing its text streams."""
+    _configure_utf8_stdio()
+    app()
 
 
 @app.callback()
@@ -2744,4 +2759,4 @@ def page_recut(
 
 
 if __name__ == "__main__":
-    app()
+    main()

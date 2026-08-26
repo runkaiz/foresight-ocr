@@ -8,6 +8,7 @@ import pytest
 from typer.main import get_command
 from typer.testing import CliRunner
 
+import foresight_ocr.cli.main as cli_main
 from foresight_ocr import __version__
 from foresight_ocr.cli.main import app
 from foresight_ocr.diagnostics import core_diagnostics
@@ -33,6 +34,29 @@ def test_every_registered_command_renders_help() -> None:
             failures.append(f"{name}: {result.exception!r}\n{result.output}")
 
     assert not failures, "\n\n".join(failures)
+
+
+def test_cli_entrypoint_configures_utf8_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Stream:
+        encoding: str | None = None
+
+        def reconfigure(self, *, encoding: str) -> None:
+            self.encoding = encoding
+
+    stdout = Stream()
+    stderr = Stream()
+    called: list[bool] = []
+    monkeypatch.setattr(cli_main.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_main.sys, "stderr", stderr)
+    monkeypatch.setattr(cli_main, "app", lambda: called.append(True))
+
+    cli_main.main()
+
+    assert stdout.encoding == "utf-8"
+    assert stderr.encoding == "utf-8"
+    assert called == [True]
 
 
 def test_backend_interpreter_path_is_platform_specific(tmp_path: Path) -> None:

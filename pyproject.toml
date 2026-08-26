@@ -50,7 +50,7 @@ audit = [
 ]
 
 [project.scripts]
-foresight-ocr = "foresight_ocr.cli.main:app"
+foresight-ocr = "foresight_ocr.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/runkaiz/foresight-ocr"

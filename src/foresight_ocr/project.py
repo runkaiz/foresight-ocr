@@ -7,6 +7,8 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
+PROJECT_MARKER = "foresight-ocr.project.json"
+
 _WINDOWS_DEVICES = {
     "CON",
     "PRN",
@@ -52,6 +54,8 @@ class Project:
     def discover(cls, start: Path | None = None) -> "Project":
         p = (start or Path.cwd()).resolve()
         for candidate in [p, *p.parents]:
+            if (candidate / PROJECT_MARKER).is_file():
+                return cls(candidate)
             artifacts = candidate / "artifacts"
             if (artifacts / "foresight-ocr.db").is_file() or (
                 artifacts / "familyocr.db"
@@ -70,6 +74,14 @@ class Project:
     @property
     def artifacts(self) -> Path:
         return self.root / "artifacts"
+
+    @property
+    def marker_path(self) -> Path:
+        return self.root / PROJECT_MARKER
+
+    @property
+    def source(self) -> Path:
+        return self.root / "source"
 
     @property
     def docs(self) -> Path:

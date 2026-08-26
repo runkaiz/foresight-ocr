@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from collections import Counter
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from functools import wraps
 from math import isfinite
@@ -23,7 +24,7 @@ from rich.table import Table
 from foresight_ocr import __version__
 from foresight_ocr.document import extract_originals, inspect_pdf
 from foresight_ocr.imaging.io import read_image, write_image
-from foresight_ocr.persistence import connect, init_schema
+from foresight_ocr.persistence import connect, connect_readonly, init_schema
 from foresight_ocr.project import InvalidDocumentId, Project, validate_document_id
 from foresight_ocr.provenance import ProcessingRun
 
@@ -35,6 +36,16 @@ def _version(value: bool) -> None:
 
 
 app = typer.Typer(add_completion=False, help="Chinese genealogy OCR pipeline.")
+project_app = typer.Typer(
+    add_completion=False,
+    help="Create portable projects and import their source PDFs.",
+)
+engine_app = typer.Typer(
+    add_completion=False,
+    help="Inspect and install isolated OCR engines.",
+)
+app.add_typer(project_app, name="project")
+app.add_typer(engine_app, name="engine")
 console = Console()
 
 
@@ -75,6 +86,34 @@ def _open_db(project: Project):
     return conn
 
 
+@project_app.command("init")
+def project_init(
+    directory: Path = typer.Argument(..., file_okay=False),
+    name: Optional[str] = typer.Option(None, "--name"),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object for a desktop client.",
+    ),
+) -> None:
+    """Create or reopen a portable Foresight OCR project."""
+    from foresight_ocr.project_setup import ProjectSetupError, create_project
+
+    try:
+        project = create_project(directory, name)
+    except ProjectSetupError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    payload = {
+        "project_root": str(project.root),
+        "marker": str(project.marker_path),
+        "database": str(project.db_path),
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+    console.print(f"[green]project[/green] {project.root}")
+
+
 def _activate(project: Project, document_id: str):
     """Load this document's profile before anything reads band labels."""
     from foresight_ocr.context import set_profile
@@ -105,6 +144,184 @@ def backend_status() -> None:
             "[green]available[/green]" if available else "[yellow]unavailable[/yellow]"
         )
         table.add_row(name, status, detail)
+    console.print(table)
+
+
+@engine_app.command("status")
+def managed_engine_status(
+    name: Optional[str] = typer.Argument(None),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the desktop engine manifest as one JSON object.",
+    ),
+) -> None:
+    """Show app-managed OCR engine installation state."""
+    from foresight_ocr.ocr.engines import (
+        ENGINE_SPECS,
+        EngineInstallError,
+        engine_manifest,
+        engine_status,
+    )
+
+    try:
+        if name is None:
+            payload = engine_manifest()
+            statuses = cast(list[dict[str, object]], payload["engines"])
+        else:
+            status = engine_status(name)
+            payload = {
+                "protocol_version": 1,
+                "engines": [status.to_dict()],
+            }
+            statuses = cast(list[dict[str, object]], payload["engines"])
+    except EngineInstallError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+
+    table = Table(title="Managed OCR engines")
+    table.add_column("engine")
+    table.add_column("state")
+    table.add_column("detail")
+    for item in statuses:
+        table.add_row(
+            str(item["display_name"]),
+            str(item["state"]),
+            str(item["detail"]),
+        )
+    console.print(table)
+    if name is None and not ENGINE_SPECS:
+        raise typer.Exit(1)
+
+
+@engine_app.command("install")
+def managed_engine_install(
+    name: str = typer.Argument(...),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Replace an existing unmanaged or broken environment.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the final engine state as one JSON object.",
+    ),
+    events: bool = typer.Option(
+        False,
+        "--events",
+        help="Emit install progress as newline-delimited JSON.",
+    ),
+) -> None:
+    """Install an isolated OCR engine with the bundled installer."""
+    from foresight_ocr.ocr.engines import EngineInstallError, install_engine
+
+    if json_output and events:
+        raise typer.BadParameter("choose either --json or --events")
+
+    def emit(stage: str, status: str) -> None:
+        payload = {
+            "type": "engine_install",
+            "engine": name,
+            "stage": stage,
+            "status": status,
+        }
+        if events:
+            typer.echo(json.dumps(payload, ensure_ascii=False))
+        elif not json_output:
+            console.print(f"{stage}: {status}")
+
+    try:
+        status = install_engine(name, replace=replace, event=emit)
+    except EngineInstallError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    payload = status.to_dict()
+    if events:
+        typer.echo(
+            json.dumps(
+                {"type": "engine_result", "engine": payload},
+                ensure_ascii=False,
+            )
+        )
+    elif json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+    else:
+        console.print(f"[green]ready[/green] {status.display_name}: {status.detail}")
+
+
+@app.command("documents")
+def documents(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the native-client document manifest as one JSON object.",
+    ),
+) -> None:
+    """List documents available in the current foresight-ocr project."""
+    from foresight_ocr.review.data import (
+        latest_ocr_tag,
+        progress,
+        reviewable_pages,
+    )
+    from foresight_ocr.review.protocol import PROTOCOL_VERSION
+
+    project = Project.discover()
+    try:
+        conn = connect_readonly(project.db_path)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    try:
+        manifest_documents = []
+        for row in conn.execute(
+            "SELECT id, title, page_count FROM documents ORDER BY id"
+        ):
+            document_id = row["id"]
+            stats = progress(conn, document_id)
+            manifest_documents.append(
+                {
+                    "id": document_id,
+                    "title": row["title"] or document_id,
+                    "page_count": int(row["page_count"]),
+                    "reviewable": bool(
+                        reviewable_pages(
+                            conn,
+                            document_id,
+                            include_ignored=True,
+                        )
+                    ),
+                    "entries": int(stats["entries"]),
+                    "reviewed": int(stats["reviewed"]),
+                    "tag": latest_ocr_tag(conn, document_id),
+                }
+            )
+    finally:
+        conn.close()
+
+    payload = {
+        "protocol_version": PROTOCOL_VERSION,
+        "project_root": str(project.root.resolve()),
+        "documents": manifest_documents,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+
+    table = Table(title=f"Foresight OCR documents · {project.root.resolve()}")
+    table.add_column("document")
+    table.add_column("pages", justify="right")
+    table.add_column("reviewed", justify="right")
+    table.add_column("OCR tag")
+    table.add_column("status")
+    for item in manifest_documents:
+        table.add_row(
+            item["title"],
+            str(item["page_count"]),
+            f"{item['reviewed']}/{item['entries']}",
+            item["tag"] or "—",
+            "reviewable" if item["reviewable"] else "not segmented",
+        )
     console.print(table)
 
 
@@ -228,6 +445,18 @@ def inspect(
 ) -> None:
     """Read PDF structure and record the corpus baseline."""
     project = Project.discover()
+    _inspect_document(project, pdf, document_id, report, emit=True)
+
+
+def _inspect_document(
+    project: Project,
+    pdf: Path,
+    document_id: str | None,
+    report: bool,
+    *,
+    emit: bool,
+) -> Any:
+    """Record one PDF and return its structure without requiring CLI output."""
     try:
         info = inspect_pdf(pdf, document_id)
     except InvalidDocumentId as exc:
@@ -294,23 +523,225 @@ def inspect(
         if len(counts) > 4:
             rendered += f", +{len(counts) - 4} more"
         table.add_row(name, rendered)
-    console.print(table)
+    if emit:
+        console.print(table)
 
     from foresight_ocr.document.profile import load_profile, save_profile
 
     profile = load_profile(project.configs, info.document_id)
     saved = save_profile(project.configs, profile)
-    console.print(
-        f"[green]profile[/green] {saved.name}: bands "
-        f"{'/'.join(profile.band_labels) or '—'} "
-        f"({profile.bands_per_page}), chain {'→'.join(profile.generation_chain)}"
-    )
+    if emit:
+        console.print(
+            f"[green]profile[/green] {saved.name}: bands "
+            f"{'/'.join(profile.band_labels) or '—'} "
+            f"({profile.bands_per_page}), chain "
+            f"{'→'.join(profile.generation_chain)}"
+        )
 
     if report:
         from foresight_ocr.document.report import write_corpus_analysis
 
         path = write_corpus_analysis(project, info)
-        console.print(f"[green]wrote[/green] {path}")
+        if emit:
+            console.print(f"[green]wrote[/green] {path}")
+    return info
+
+
+@project_app.command("import")
+@_records_run_failure
+def project_import(
+    pdf: Path = typer.Argument(..., exists=True, dir_okay=False),
+    document_id: Optional[str] = typer.Option(None, "--id"),
+    report: bool = typer.Option(True, "--report/--no-report"),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object for a desktop client.",
+    ),
+) -> None:
+    """Preserve a source PDF in this project and inspect its structure."""
+    from foresight_ocr.project_setup import ProjectSetupError, import_pdf_source
+
+    project = Project.discover()
+    try:
+        imported = import_pdf_source(project, pdf, document_id)
+    except ProjectSetupError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    info = _inspect_document(
+        project,
+        imported.source,
+        imported.document_id,
+        report,
+        emit=not json_output,
+    )
+    payload = {
+        "project_root": str(project.root),
+        "document_id": imported.document_id,
+        "source": str(imported.source),
+        "checksum": imported.checksum,
+        "copied": imported.copied,
+        "page_count": info.page_count,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+    console.print(
+        f"[green]imported[/green] {imported.source.name} "
+        f"({info.page_count} pages)"
+    )
+
+
+_PREPARE_STAGES = (
+    ("preserve_pdf", "保留 PDF 并校验"),
+    ("inspect_pdf", "检查 PDF 结构"),
+    ("extract_pages", "提取原始页面图像"),
+    ("normalize_frames", "标准化页面边框"),
+    ("detect_layout", "检测版面"),
+    ("segment_regions", "切分条目区域"),
+    ("initial_ocr", "初始 OCR"),
+)
+
+
+@project_app.command("prepare")
+@_records_run_failure
+def project_prepare(
+    document_id: str = typer.Argument(...),
+    backend: str = typer.Option("paddleocr_vl", "--backend"),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the final preparation result as one JSON object.",
+    ),
+    events: bool = typer.Option(
+        False,
+        "--events",
+        help="Emit preparation progress as newline-delimited JSON.",
+    ),
+) -> None:
+    """Prepare every page for review, then run incremental initial OCR."""
+    from foresight_ocr.provenance import sha256_file
+
+    if json_output and events:
+        raise typer.BadParameter("choose either --json or --events")
+    project = Project.discover()
+    try:
+        document_id = validate_document_id(document_id)
+    except InvalidDocumentId as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    conn = _open_db(project)
+    try:
+        document = conn.execute(
+            "SELECT source_path, checksum, page_count FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if document is None:
+        raise typer.BadParameter(f"unknown document {document_id!r}; import it first")
+
+    event_stream = sys.stdout
+    machine_output = json_output or events
+
+    def emit(stage: str, status: str, detail: str | None = None) -> None:
+        index = next(
+            number
+            for number, (candidate, _label) in enumerate(_PREPARE_STAGES, start=1)
+            if candidate == stage
+        )
+        label = _PREPARE_STAGES[index - 1][1]
+        payload = {
+            "type": "project_prepare",
+            "document_id": document_id,
+            "stage": stage,
+            "label": label,
+            "status": status,
+            "index": index,
+            "total": len(_PREPARE_STAGES),
+            "detail": detail,
+        }
+        if events:
+            print(
+                json.dumps(payload, ensure_ascii=False),
+                file=event_stream,
+                flush=True,
+            )
+        elif not json_output:
+            color = {"completed": "green", "failed": "red"}.get(status, "cyan")
+            console.print(f"[{color}]{label}[/{color}]: {detail or status}")
+
+    def run_stage(stage: str, action: Callable[[], Any]) -> Any:
+        emit(stage, "started")
+        try:
+            if machine_output:
+                with redirect_stdout(sys.stderr):
+                    result = action()
+            else:
+                result = action()
+        except BaseException as exc:
+            emit(stage, "failed", str(exc) or exc.__class__.__name__)
+            raise
+        emit(stage, "completed")
+        return result
+
+    source = Path(document["source_path"]).expanduser().resolve()
+
+    def verify_source() -> None:
+        if not source.is_file():
+            raise ProjectSetupError(f"preserved PDF is missing: {source}")
+        try:
+            source.relative_to(project.source.resolve())
+        except ValueError as exc:
+            raise ProjectSetupError(
+                "document source is outside the portable project source directory"
+            ) from exc
+        if sha256_file(source) != document["checksum"]:
+            raise ProjectSetupError("preserved PDF checksum no longer matches import")
+
+    def verify_inspection() -> None:
+        structure = project.analysis_dir(document_id, "inspect") / "structure.json"
+        if not structure.is_file():
+            raise ProjectSetupError("PDF structure record is missing; import it again")
+
+    # Import already performed the first two stages. Revalidating their durable
+    # evidence makes a retry honest without copying or inspecting the PDF again.
+    from foresight_ocr.project_setup import ProjectSetupError
+
+    run_stage("preserve_pdf", verify_source)
+    run_stage("inspect_pdf", verify_inspection)
+    run_stage("extract_pages", lambda: extract(document_id, None, False))
+    run_stage("normalize_frames", lambda: normalize(document_id, None, 4, True, True))
+    run_stage("detect_layout", lambda: layout(document_id, 0, 24))
+    run_stage(
+        "segment_regions",
+        lambda: segment(document_id, None, 0, "tight", "maxrgb"),
+    )
+    recognition = run_stage(
+        "initial_ocr",
+        lambda: recognize(document_id, backend, "watermark", False, False, False),
+    )
+    assert isinstance(recognition, dict)
+    result = {
+        "protocol_version": 1,
+        "project_root": str(project.root),
+        "document_id": document_id,
+        "page_count": int(document["page_count"]),
+        "backend": backend,
+        "recognition": recognition,
+        "ready": True,
+    }
+    if events:
+        print(
+            json.dumps(
+                {"type": "project_prepare_result", **result},
+                ensure_ascii=False,
+            ),
+            file=event_stream,
+            flush=True,
+        )
+    elif json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False))
+    else:
+        console.print(f"[green]ready for review[/green] {document_id}")
 
 
 @app.command()
@@ -1763,6 +2194,119 @@ def benchmark(
     _render_benchmark(project, document_id, rows, agreements)
 
 
+@app.command()
+@_records_run_failure
+def recognize(
+    document_id: str = typer.Argument(...),
+    backend: str = typer.Option("paddleocr_vl", "--backend"),
+    variant: str = typer.Option("watermark", "--variant"),
+    force: bool = typer.Option(False, "--force"),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the final recognition result as one JSON object.",
+    ),
+    events: bool = typer.Option(
+        False,
+        "--events",
+        help="Emit recognition progress as newline-delimited JSON.",
+    ),
+) -> dict[str, Any]:
+    """Incrementally recognize every live region in a document."""
+    from foresight_ocr.ocr.ondemand import recognize_regions
+    from foresight_ocr.persistence.locks import StageBusy, stage_lock
+
+    if json_output and events:
+        raise typer.BadParameter("choose either --json or --events")
+    if variant != "watermark":
+        raise typer.BadParameter(
+            "document recognition only supports the watermark variant"
+        )
+    project = Project.discover()
+    _activate(project, document_id)
+    conn = _open_db(project)
+    rows = conn.execute(
+        """SELECT r.region_uid, r.page_index FROM regions r
+           LEFT JOIN pages p
+             ON p.document_id = r.document_id AND p.page_index = r.page_index
+           WHERE r.document_id = ? AND r.deleted_at IS NULL
+             AND r.state != 'rejected' AND COALESCE(p.ignored, 0) = 0
+           ORDER BY r.page_index, r.band_ordinal, r.reading_order""",
+        (document_id,),
+    ).fetchall()
+    region_uids = [str(row["region_uid"]) for row in rows]
+    event_stream = sys.stdout
+
+    def relay(progress: dict[str, Any]) -> None:
+        if not events:
+            return
+        print(
+            json.dumps(
+                {
+                    "type": "recognition",
+                    "document_id": document_id,
+                    **progress,
+                },
+                ensure_ascii=False,
+            ),
+            file=event_stream,
+            flush=True,
+        )
+
+    relay({"stage": "queued", "completed": 0, "total": len(region_uids)})
+    try:
+        with stage_lock(project.artifacts, document_id, "ocr"):
+            answers = recognize_regions(
+                conn,
+                project,
+                document_id,
+                region_uids,
+                backend=backend,
+                variant=variant,
+                force=force,
+                on_progress=relay,
+            )
+            conn.commit()
+    except StageBusy as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    finally:
+        conn.close()
+
+    errors = [
+        {"region_uid": answer.region_uid, "error": answer.error}
+        for answer in answers
+        if answer.error
+    ]
+    result: dict[str, Any] = {
+        "document_id": document_id,
+        "requested": len(region_uids),
+        "read": len(answers) - len(errors),
+        "recognized": sum(not answer.reused and not answer.error for answer in answers),
+        "reused": sum(answer.reused for answer in answers),
+        "errors": errors,
+        "backend": backend,
+        "variant": variant,
+        "force": force,
+    }
+    if events:
+        print(
+            json.dumps(
+                {"type": "recognition_result", "ok": not errors, **result},
+                ensure_ascii=False,
+            ),
+            file=event_stream,
+            flush=True,
+        )
+    elif json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False))
+    else:
+        console.print(
+            f"[green]recognized[/green] {result['recognized']} new, "
+            f"{result['reused']} reused, {len(errors)} errors"
+        )
+    return result
+
+
 # Two stages write findings for the same document and the review app shows them
 # together. Each clears only what it produced, so re-running one does not erase
 # the other's — `validate` used to delete every finding for the document.
@@ -1893,6 +2437,11 @@ def review(
     ),
     reviewer: str = typer.Option("local", help="Recorded with each correction"),
     open_browser: bool = typer.Option(True, "--open/--no-open"),
+    ready_json: bool = typer.Option(
+        False,
+        "--ready-json",
+        help="Print one flushed JSON ready record after binding the socket.",
+    ),
 ) -> None:
     """Page-at-a-time review app for verifying transcriptions."""
     from foresight_ocr.review import serve
@@ -1905,6 +2454,7 @@ def review(
         tag=tag,
         reviewer=reviewer,
         open_browser=open_browser,
+        ready_json=ready_json,
     )
 
 

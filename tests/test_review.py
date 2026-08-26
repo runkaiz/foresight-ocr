@@ -49,6 +49,7 @@ from foresight_ocr.review.server import (
     _handler_factory,
     _reocr_document,
     _reocr_page,
+    serve,
 )
 
 
@@ -570,6 +571,165 @@ def test_review_http_rejects_cross_site_rebinding_and_malformed_json(tmp_path):
         )
         assert status == 413
         assert result["error"] == "JSON request body is too large"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_review_ready_json_reports_the_bound_ephemeral_port(
+    tmp_path, monkeypatch, capsys
+):
+    project = Project(tmp_path)
+    conn = connect(project.db_path)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO documents (id, title, source_path, checksum, page_count, "
+        "created_at) VALUES ('doc','宗譜','p','c',1,'now')"
+    )
+    conn.execute(
+        "INSERT INTO pages (document_id, page_index, width, height) "
+        "VALUES ('doc',1,120,100)"
+    )
+    conn.commit()
+    conn.close()
+
+    class FakeServer:
+        server_port = 49152
+        server_address = ("127.0.0.1", server_port)
+
+        def __init__(self, _address, _handler):
+            self.closed = False
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            self.closed = True
+
+    monkeypatch.setattr("foresight_ocr.review.server.ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(
+        "foresight_ocr.document.profile.load_profile",
+        lambda *_args: DocumentProfile(
+            document_id="doc",
+            band_labels=["庶", "富", "教"],
+            generation_chain=["允", "庶", "富", "教"],
+            bands_per_page=3,
+        ),
+    )
+
+    serve(
+        project,
+        "doc",
+        port=0,
+        open_browser=False,
+        ready_json=True,
+    )
+
+    first_line = capsys.readouterr().out.splitlines()[0]
+    assert json.loads(first_line) == {
+        "type": "ready",
+        "protocol_version": 1,
+        "url": "http://127.0.0.1:49152",
+        "document_id": "doc",
+    }
+
+
+def test_review_http_serves_explicit_primary_crop_variants(tmp_path):
+    project = Project(tmp_path)
+    conn = connect(project.db_path)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO documents (id, title, source_path, checksum, page_count, "
+        "created_at) VALUES ('doc','宗譜','p','c',1,'now')"
+    )
+    conn.execute(
+        "INSERT INTO pages (document_id, page_index, width, height) "
+        "VALUES ('doc',58,120,100)"
+    )
+    region = store.create_region(
+        conn,
+        "doc",
+        58,
+        [20.0, 5.0, 60.0, 90.0],
+        band_label="庶",
+        band_ordinal=0,
+        reading_order=0,
+        entry_index=0,
+    )
+    conn.commit()
+    conn.close()
+
+    pages = project.pages_dir("doc", "normalized")
+    pages.mkdir(parents=True)
+    image = np.full((100, 120, 3), 240, dtype=np.uint8)
+    image[10:40, 25:45] = (255, 255, 0)
+    image[45:80, 30:50] = (30, 30, 30)
+    assert write_image(pages / "p0058.png", image)
+
+    handler = _handler_factory(project, "doc", None, "test")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+
+    def request(path):
+        try:
+            response = urllib.request.urlopen(base + path, timeout=3)
+        except HTTPError as exc:
+            response = exc
+        with response:
+            return response.status, response.read(), response.headers
+
+    try:
+        status, body, _headers = request("/api/pages")
+        assert status == 200
+        bootstrap = json.loads(body)
+        assert bootstrap["protocol_version"] == 1
+        assert "crop_image_variants" in bootstrap["capabilities"]
+
+        variants = {}
+        for variant in ("original", "watermark"):
+            status, body, _headers = request(
+                "/api/crop-image?"
+                + urlencode(
+                    {
+                        "region_uid": region.region_uid,
+                        "variant": variant,
+                    }
+                )
+            )
+            assert status == 200
+            payload = json.loads(body)
+            assert payload["region_uid"] == region.region_uid
+            assert payload["variant"] == variant
+            assert payload["width"] == 40
+            assert payload["height"] == 85
+            assert payload["pixel_bbox"] == [20, 5, 60, 90]
+            variants[variant] = payload["path"]
+
+            status, image_body, headers = request(
+                "/img?" + urlencode({"path": payload["path"]})
+            )
+            assert status == 200
+            assert headers.get_content_type() == "image/png"
+            assert image_body.startswith(b"\x89PNG")
+
+        assert variants["original"] != variants["watermark"]
+
+        status, body, _headers = request(
+            "/api/crop-image?"
+            + urlencode({"region_uid": region.region_uid, "variant": "bad"})
+        )
+        assert status == 400
+        assert "variant" in json.loads(body)["error"]
+
+        status, body, _headers = request(
+            "/api/crop-image?"
+            + urlencode({"region_uid": "missing", "variant": "original"})
+        )
+        assert status == 404
+        assert json.loads(body)["error"] == "region not found"
     finally:
         server.shutdown()
         server.server_close()

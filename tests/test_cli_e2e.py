@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sqlite3
 from itertools import pairwise
@@ -11,7 +12,10 @@ from PIL import Image, ImageDraw
 from typer.testing import CliRunner
 
 from foresight_ocr.cli.main import app
+from foresight_ocr.persistence import connect_readonly
 from foresight_ocr.provenance import sha256_file
+
+cli_main = importlib.import_module("foresight_ocr.cli.main")
 
 
 def _sample_pdf(path: Path) -> None:
@@ -79,6 +83,214 @@ def test_inspect_and_extract_create_a_portable_project(
             "SELECT COUNT(*) FROM processing_runs "
             "WHERE document_id = 'demo' AND status = 'completed'"
         ).fetchone() == (3,)
+
+
+def test_documents_json_is_a_machine_readable_project_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    pdf = tmp_path / "宗譜.pdf"
+    _sample_pdf(pdf)
+
+    assert (
+        runner.invoke(
+            app,
+            ["inspect", str(pdf), "--id", "宗譜", "--no-report"],
+        ).exit_code
+        == 0
+    )
+    assert runner.invoke(app, ["extract", "宗譜"]).exit_code == 0
+    database = tmp_path / "artifacts" / "foresight-ocr.db"
+    with sqlite3.connect(database) as connection:
+        logical_before = "\n".join(connection.iterdump())
+
+    readonly = connect_readonly(database)
+    try:
+        assert readonly.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            readonly.execute("UPDATE documents SET title = 'changed'")
+    finally:
+        readonly.close()
+
+    result = runner.invoke(app, ["documents", "--json"])
+
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(database) as connection:
+        assert "\n".join(connection.iterdump()) == logical_before
+    manifest = json.loads(result.output)
+    assert manifest == {
+        "protocol_version": 1,
+        "project_root": str(tmp_path),
+        "documents": [
+            {
+                "id": "宗譜",
+                "title": "宗譜",
+                "page_count": 1,
+                "reviewable": True,
+                "entries": 0,
+                "reviewed": 0,
+                "tag": None,
+            }
+        ],
+    }
+
+
+def test_native_project_commands_create_and_import_without_a_checkout_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    project_root = tmp_path / "章氏宗譜"
+    source = tmp_path / "待導入.pdf"
+    _sample_pdf(source)
+
+    initialized = runner.invoke(
+        app,
+        ["project", "init", str(project_root), "--name", "章氏宗譜", "--json"],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    assert json.loads(initialized.output)["project_root"] == str(project_root)
+
+    monkeypatch.chdir(project_root)
+    imported = runner.invoke(
+        app,
+        ["project", "import", str(source), "--no-report", "--json"],
+    )
+    assert imported.exit_code == 0, imported.output
+    payload = json.loads(imported.output)
+    assert payload["document_id"] == "待導入"
+    assert payload["page_count"] == 1
+    assert payload["copied"] is True
+    assert (project_root / "source" / "待導入.pdf").read_bytes() == source.read_bytes()
+    with sqlite3.connect(project_root / "artifacts" / "foresight-ocr.db") as connection:
+        assert connection.execute(
+            "SELECT id, page_count FROM documents"
+        ).fetchone() == ("待導入", 1)
+
+
+def test_project_prepare_emits_seven_runtime_driven_stages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    project_root = tmp_path / "project"
+    source = tmp_path / "book.pdf"
+    _sample_pdf(source)
+    assert runner.invoke(app, ["project", "init", str(project_root)]).exit_code == 0
+    monkeypatch.chdir(project_root)
+    assert (
+        runner.invoke(
+            app,
+            ["project", "import", str(source), "--no-report", "--json"],
+        ).exit_code
+        == 0
+    )
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        cli_main, "extract", lambda *_args: called.append("extract_pages")
+    )
+    monkeypatch.setattr(
+        cli_main, "normalize", lambda *_args: called.append("normalize_frames")
+    )
+    monkeypatch.setattr(
+        cli_main, "layout", lambda *_args: called.append("detect_layout")
+    )
+    monkeypatch.setattr(
+        cli_main, "segment", lambda *_args: called.append("segment_regions")
+    )
+
+    def fake_recognize(*_args):
+        called.append("initial_ocr")
+        return {
+            "requested": 4,
+            "read": 4,
+            "recognized": 4,
+            "reused": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(cli_main, "recognize", fake_recognize)
+
+    prepared = runner.invoke(
+        app,
+        ["project", "prepare", "book", "--backend", "ppocr_v5", "--events"],
+    )
+
+    assert prepared.exit_code == 0, prepared.output
+    messages = [json.loads(line) for line in prepared.output.splitlines()]
+    stage_events = [row for row in messages if row["type"] == "project_prepare"]
+    assert [(row["stage"], row["status"]) for row in stage_events] == [
+        (stage, status)
+        for stage in (
+            "preserve_pdf",
+            "inspect_pdf",
+            "extract_pages",
+            "normalize_frames",
+            "detect_layout",
+            "segment_regions",
+            "initial_ocr",
+        )
+        for status in ("started", "completed")
+    ]
+    assert [row["index"] for row in stage_events[::2]] == list(range(1, 8))
+    assert all(row["total"] == 7 for row in stage_events)
+    assert called == [
+        "extract_pages",
+        "normalize_frames",
+        "detect_layout",
+        "segment_regions",
+        "initial_ocr",
+    ]
+    assert messages[-1]["type"] == "project_prepare_result"
+    assert messages[-1]["ready"] is True
+
+
+def test_recognize_events_are_valid_ndjson_when_no_regions_need_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    project_root = tmp_path / "project"
+    source = tmp_path / "empty.pdf"
+    _sample_pdf(source)
+    assert runner.invoke(app, ["project", "init", str(project_root)]).exit_code == 0
+    monkeypatch.chdir(project_root)
+    assert (
+        runner.invoke(
+            app,
+            ["project", "import", str(source), "--no-report", "--json"],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        ["recognize", "empty", "--backend", "ppocr_v5", "--events"],
+    )
+
+    assert result.exit_code == 0, result.output
+    messages = [json.loads(line) for line in result.output.splitlines()]
+    assert messages == [
+        {
+            "type": "recognition",
+            "document_id": "empty",
+            "stage": "queued",
+            "completed": 0,
+            "total": 0,
+        },
+        {
+            "type": "recognition_result",
+            "ok": True,
+            "document_id": "empty",
+            "requested": 0,
+            "read": 0,
+            "recognized": 0,
+            "reused": 0,
+            "errors": [],
+            "backend": "ppocr_v5",
+            "variant": "watermark",
+            "force": False,
+        },
+    ]
 
 
 @pytest.mark.parametrize("document_id", ["../escape", r"..\\escape", "CON"])

@@ -424,6 +424,23 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open an existing project database without creating or migrating it."""
+    resolved = db_path.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"project database does not exist: {resolved}")
+    conn = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro",
+        uri=True,
+        timeout=_BUSY_TIMEOUT_S,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA query_only = ON")
+    conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_S * 1000)}")
+    return conn
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     """Bring the database to the current schema.
 

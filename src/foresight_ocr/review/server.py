@@ -23,12 +23,19 @@ from pathlib import Path
 from typing import Any, Callable, cast
 from urllib.parse import parse_qs, quote, urlparse
 
+from PIL import Image
+
 from foresight_ocr.ocr.fields import compose_entry, own_id_from_digits
 from foresight_ocr.ocr.ondemand import recognize_regions
 from foresight_ocr.persistence import connect, init_schema
 from foresight_ocr.persistence.locks import StageBusy, stage_lock
 from foresight_ocr.project import Project
-from foresight_ocr.regions.crops import ensure_cross_page_previews
+from foresight_ocr.regions import store as region_store
+from foresight_ocr.regions.crops import (
+    CropUnavailable,
+    ensure_crop,
+    ensure_cross_page_previews,
+)
 from foresight_ocr.regions.recut import (
     PageNotSegmentable,
     apply_comb,
@@ -50,6 +57,7 @@ from foresight_ocr.review.data import (
     save_correction,
     set_page_ignored,
 )
+from foresight_ocr.review.protocol import PROTOCOL_VERSION
 
 MAX_JSON_BODY_BYTES = 1_000_000
 LOCAL_HTTP_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -635,6 +643,7 @@ def _handler_factory(
                     summary = page_summary(conn, document_id)
                     self._json(
                         {
+                            "protocol_version": PROTOCOL_VERSION,
                             "document_id": document_id,
                             "pages": [s["page"] for s in summary],
                             "summary": summary,
@@ -642,6 +651,7 @@ def _handler_factory(
                             "tag": tag,
                             "capabilities": [
                                 "page_image_watermark",
+                                "crop_image_variants",
                                 "page_reocr",
                                 "streaming_reocr",
                                 "manual_boundaries",
@@ -804,6 +814,55 @@ def _handler_factory(
                         }
                     )
                 except (ValueError, RuntimeError) as exc:
+                    self._json({"error": str(exc)}, 400)
+                finally:
+                    conn.close()
+                return
+
+            if url.path == "/api/crop-image":
+                region_uid = q.get("region_uid", [""])[0]
+                variant = q.get("variant", ["watermark"])[0]
+                if not region_uid:
+                    self._json({"error": "region_uid is required"}, 400)
+                    return
+                if variant not in {"original", "watermark"}:
+                    self._json(
+                        {"error": "variant must be 'original' or 'watermark'"},
+                        400,
+                    )
+                    return
+                conn = _conn()
+                try:
+                    region = region_store.get(conn, region_uid)
+                    if (
+                        region is None
+                        or region.document_id != document_id
+                        or region.deleted_at is not None
+                        or region.state == "rejected"
+                    ):
+                        self._json({"error": "region not found"}, 404)
+                        return
+                    crop = ensure_crop(
+                        conn,
+                        project,
+                        region,
+                        variant=variant,
+                        context="tight",
+                    )
+                    conn.commit()
+                    with Image.open(crop.path) as crop_image_file:
+                        width, height = crop_image_file.size
+                    self._json(
+                        {
+                            "region_uid": crop.region_uid,
+                            "variant": crop.variant,
+                            "path": str(crop.path),
+                            "width": width,
+                            "height": height,
+                            "pixel_bbox": crop.pixel_bbox,
+                        }
+                    )
+                except CropUnavailable as exc:
                     self._json({"error": str(exc)}, 400)
                 finally:
                     conn.close()
@@ -1214,6 +1273,7 @@ def serve(
     tag: str | None = None,
     reviewer: str = "local",
     open_browser: bool = True,
+    ready_json: bool = False,
 ) -> None:
     # Band labels are document data. Without this the server reads them from the
     # fallback profile, which is right for the first volume and silently wrong
@@ -1238,7 +1298,20 @@ def serve(
 
     handler = _handler_factory(project, document_id, tag, reviewer)
     server = ThreadingHTTPServer((host, port), handler)
-    url = f"http://{host}:{port}/"
+    url = f"http://{host}:{server.server_port}/"
+    if ready_json:
+        print(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "url": url.rstrip("/"),
+                    "document_id": document_id,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     print(f"review server: {url}")
     print(
         f"  document {document_id}: {len(pages)} pages, "

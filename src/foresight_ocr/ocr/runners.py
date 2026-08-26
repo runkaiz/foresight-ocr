@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from foresight_ocr.ocr.base import register_backend
+from foresight_ocr.ocr.engines import engine_environment
 from foresight_ocr.ocr.subprocess_backend import SubprocessBackend
 from foresight_ocr.project import Project
 
@@ -25,6 +26,14 @@ def _venv_python(root: Path, name: str, *, platform: str | None = None) -> Path:
     if platform == "nt":
         return root / name / "Scripts" / "python.exe"
     return root / name / "bin" / "python"
+
+
+def _engine_python(root: Path, legacy_name: str, engine_name: str) -> Path:
+    """Honor a project's existing environment, then use the managed shared one."""
+    legacy = _venv_python(root, legacy_name)
+    if legacy.is_file():
+        return legacy
+    return _venv_python(engine_environment(engine_name), ".")
 
 
 def _runner(root: Path, filename: str) -> Path:
@@ -43,7 +52,7 @@ def _ppocr_v5(**options: Any) -> SubprocessBackend:
     root = _root()
     return SubprocessBackend(
         name="ppocr_v5",
-        python=_venv_python(root, ".venv-paddle"),
+        python=_engine_python(root, ".venv-paddle", "ppocr_v5"),
         runner=_runner(root, "ppocr_v5.py"),
         model="PP-OCRv5",
         model_version="pending",
@@ -62,7 +71,7 @@ def _paddleocr_vl(**options: Any) -> SubprocessBackend:
     runner_batch_size = 256 if options.get("batched", False) else 1024
     return SubprocessBackend(
         name="paddleocr_vl",
-        python=_venv_python(root, ".venv-vlm"),
+        python=_engine_python(root, ".venv-vlm", "paddleocr_vl"),
         runner=_runner(root, "paddleocr_vl.py"),
         model=options.pop("model", "PaddlePaddle/PaddleOCR-VL-1.6"),
         model_version="pending",

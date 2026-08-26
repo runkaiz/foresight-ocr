@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from foresight_ocr.project import InvalidDocumentId, Project, validate_document_id
+from foresight_ocr.project import (
+    PROJECT_MARKER,
+    InvalidDocumentId,
+    Project,
+    validate_document_id,
+)
 
 
 def test_new_projects_use_the_foresight_ocr_database_name(tmp_path: Path):
@@ -83,3 +88,9 @@ def test_discovery_finds_foresight_source_or_data_project(tmp_path: Path) -> Non
     nested_data.mkdir()
     (data / "artifacts" / "foresight-ocr.db").touch()
     assert Project.discover(nested_data).root == data.resolve()
+
+    native = tmp_path / "native-project"
+    nested_native = native / "source" / "incoming"
+    nested_native.mkdir(parents=True)
+    (native / PROJECT_MARKER).write_text("{}", encoding="utf-8")
+    assert Project.discover(nested_native).root == native.resolve()

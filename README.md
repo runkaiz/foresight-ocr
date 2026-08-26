@@ -212,6 +212,12 @@ foresight-ocr review YOUR_DOCUMENT
 ```
 
 The server binds to `127.0.0.1:8765` by default and opens the review workspace.
+
+An experimental native macOS 27 SwiftUI/AppKit client is also available under
+[`clients/macos`](clients/macos/README.md). It opens an existing project,
+discovers its documents, manages an ephemeral loopback review service, and puts
+the selected provenance crop at the center of the review workspace. The browser
+reviewer remains supported.
 It has no authentication layer and should not be exposed directly to an
 untrusted network.
 

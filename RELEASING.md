@@ -117,5 +117,8 @@ source distribution to PyPI through the protected environment.
 
 A manual workflow run is a private release-candidate build: it uses the
 technical publication audit and never creates a GitHub release or publishes to
-PyPI. A tag run uses the complete audit and therefore fails until every author
-identity and corpus-derived asset decision in `PUBLICATION.toml` is resolved.
+PyPI. Because GitHub does not offer artifact attestations for user-owned private
+repositories, that manual candidate is checksum-verified but not attested. A tag
+run uses the complete audit and requires provenance attestation, so it fails until
+every author identity and corpus-derived asset decision in `PUBLICATION.toml` is
+resolved and the repository is public.

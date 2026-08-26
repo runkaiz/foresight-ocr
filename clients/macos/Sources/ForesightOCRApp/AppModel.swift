@@ -870,18 +870,12 @@ final class ReviewAppModel: ObservableObject {
     guard let api else { return }
     let requestID = UUID()
     pageRequestID = requestID
+    contextRequestID = UUID()
+    cropRequestID = UUID()
     isLoadingPage = true
     errorMessage = nil
     do {
       let loaded = try await api.page(page, spread: 1)
-      guard pageRequestID == requestID else { return }
-      spread = loaded
-      selectedPage = page
-
-      await loadContextImage(
-        for: page,
-        fallbackPath: loaded.pages.first?.imagePath
-      )
       guard pageRequestID == requestID else { return }
 
       let entries = loaded.pages.flatMap(\.entries)
@@ -892,27 +886,154 @@ final class ReviewAppModel: ObservableObject {
         preferred
         ?? entries.first(where: { $0.flagged && $0.role == "entry" })
         ?? entries.first
-      if loaded.pages.first?.ignored == true {
+      let ignored = loaded.pages.first?.ignored == true
+      let preparedContext =
+        ignored
+        ? PreparedContextImage.empty
+        : await prepareContextImage(
+          api: api,
+          page: page,
+          fallbackPath: loaded.pages.first?.imagePath
+        )
+      guard pageRequestID == requestID else { return }
+      let preparedCrop: PreparedCropImage
+      if ignored {
+        preparedCrop = .empty
+      } else if let next {
+        preparedCrop = await prepareCropImage(api: api, entry: next)
+      } else {
+        preparedCrop = .empty
+      }
+      guard pageRequestID == requestID else { return }
+
+      // Keep the previous page visible while its replacement is loading, then
+      // publish one coherent page snapshot. SwiftUI coalesces these synchronous
+      // mutations into a single render pass instead of exposing blank image and
+      // selection states between network requests.
+      spread = loaded
+      selectedPage = page
+      contextImageMetadata = preparedContext.metadata
+      contextImage = preparedContext.image
+      cropMetadata = preparedCrop.metadata
+      cropImage = preparedCrop.image
+
+      if ignored {
         selectedEntryID = nil
-        cropImage = nil
         documentOCRPollingTask?.cancel()
         documentOCRPollingTask = nil
         documentOCRJob = nil
         pageOCREvent = nil
-        cropMetadata = nil
       } else if let next {
         applySelection(next)
-        await loadCrop(for: next)
       } else {
         selectedEntryID = nil
-        cropImage = nil
       }
+      if preparedCrop.image != nil { cropFitCommand += 1 }
+      errorMessage =
+        [preparedContext.errorMessage, preparedCrop.errorMessage]
+        .compactMap { $0 }
+        .first
       statusMessage = "第 \(page) 页"
     } catch {
       guard pageRequestID == requestID else { return }
       errorMessage = error.localizedDescription
     }
     if pageRequestID == requestID { isLoadingPage = false }
+  }
+
+  private struct PreparedContextImage {
+    let image: NSImage?
+    let metadata: PageImage?
+    let errorMessage: String?
+
+    static let empty = PreparedContextImage(
+      image: nil,
+      metadata: nil,
+      errorMessage: nil
+    )
+  }
+
+  private struct PreparedCropImage {
+    let image: NSImage?
+    let metadata: CropImage?
+    let errorMessage: String?
+
+    static let empty = PreparedCropImage(
+      image: nil,
+      metadata: nil,
+      errorMessage: nil
+    )
+  }
+
+  private func prepareContextImage(
+    api: ForesightAPI,
+    page: Int,
+    fallbackPath: String?
+  ) async -> PreparedContextImage {
+    do {
+      let path: String
+      let metadata: PageImage?
+      if supportsPageImageVariants {
+        let loadedMetadata = try await api.pageImage(
+          page: page,
+          variant: contextImageVariant
+        )
+        metadata = loadedMetadata
+        path = loadedMetadata.path
+      } else if let fallbackPath {
+        metadata = nil
+        path = fallbackPath
+      } else {
+        return .empty
+      }
+      let data = try await api.image(pathToken: path)
+      return PreparedContextImage(
+        image: NSImage(data: data),
+        metadata: metadata,
+        errorMessage: nil
+      )
+    } catch {
+      return PreparedContextImage(
+        image: nil,
+        metadata: nil,
+        errorMessage: error.localizedDescription
+      )
+    }
+  }
+
+  private func prepareCropImage(
+    api: ForesightAPI,
+    entry: ReviewEntry
+  ) async -> PreparedCropImage {
+    do {
+      let path: String
+      let metadata: CropImage?
+      if supportsCropVariants, let regionUID = entry.regionUID {
+        let loadedMetadata = try await api.cropImage(
+          regionUID: regionUID,
+          variant: imageVariant
+        )
+        metadata = loadedMetadata
+        path = loadedMetadata.path
+      } else if let cropPath = entry.cropPath {
+        metadata = nil
+        path = cropPath
+      } else {
+        return .empty
+      }
+      let data = try await api.image(pathToken: path)
+      return PreparedCropImage(
+        image: NSImage(data: data),
+        metadata: metadata,
+        errorMessage: nil
+      )
+    } catch {
+      return PreparedCropImage(
+        image: nil,
+        metadata: nil,
+        errorMessage: error.localizedDescription
+      )
+    }
   }
 
   private func loadCrop(for entry: ReviewEntry) async {

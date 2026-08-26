@@ -176,6 +176,36 @@ private struct NativeWorkspaceSplitView: NSViewControllerRepresentable {
     )
   }
 
+  func sizeThatFits(
+    _ proposal: ProposedViewSize,
+    nsViewController controller: NSSplitViewController,
+    context: Context
+  ) -> CGSize? {
+    // Loading a page replaces the hosted views in several split items. Their
+    // temporary fitting sizes must not become the size of the whole workspace.
+    // Prefer the parent proposal and retain the current split-view size when an
+    // axis is unspecified.
+    let currentSize = controller.view.bounds.size
+    return CGSize(
+      width: resolvedDimension(proposal.width, current: currentSize.width, fallback: 1_180),
+      height: resolvedDimension(proposal.height, current: currentSize.height, fallback: 720)
+    )
+  }
+
+  private func resolvedDimension(
+    _ proposed: CGFloat?,
+    current: CGFloat,
+    fallback: CGFloat
+  ) -> CGFloat {
+    if let proposed, proposed.isFinite, proposed > 0 {
+      return proposed
+    }
+    if current.isFinite, current > 0 {
+      return current
+    }
+    return fallback
+  }
+
   private func makeItem(
     rootView: AnyView,
     width: CGFloat,

@@ -23,6 +23,7 @@ struct RootView: View {
         }
       }
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .alert(
       "Foresight OCR",
       isPresented: Binding(

@@ -310,6 +310,14 @@ def _notarize_macos(stage: Path, executable: Path) -> None:
             "FORESIGHT_APPLE_TEAM_ID, and FORESIGHT_APPLE_APP_PASSWORD"
         )
     assert apple_id is not None and team_id is not None and password is not None
+    credentials = [
+        "--apple-id",
+        apple_id,
+        "--team-id",
+        team_id,
+        "--password",
+        password,
+    ]
     with tempfile.TemporaryDirectory(prefix="foresight-ocr-notary-") as temp:
         upload = Path(temp) / f"{stage.name}.zip"
         _run(["/usr/bin/ditto", "-c", "-k", "--keepParent", str(stage), str(upload)])
@@ -319,12 +327,7 @@ def _notarize_macos(stage: Path, executable: Path) -> None:
                 "notarytool",
                 "submit",
                 str(upload),
-                "--apple-id",
-                apple_id,
-                "--team-id",
-                team_id,
-                "--password",
-                password,
+                *credentials,
                 "--wait",
                 "--output-format",
                 "json",
@@ -336,8 +339,41 @@ def _notarize_macos(stage: Path, executable: Path) -> None:
         )
         response = json.loads(result.stdout)
         if response.get("status") != "Accepted":
+            issue_summary = ""
+            submission_id = response.get("id")
+            if submission_id:
+                log_result = subprocess.run(
+                    [
+                        "/usr/bin/xcrun",
+                        "notarytool",
+                        "log",
+                        str(submission_id),
+                        *credentials,
+                        "--output-format",
+                        "json",
+                    ],
+                    cwd=ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if log_result.returncode == 0:
+                    log = json.loads(log_result.stdout)
+                    issues = log.get("issues", [])
+                    if issues:
+                        issue_summary = "\n" + "\n".join(
+                            "- {severity}: {message} [{architecture}] {path}".format(
+                                severity=issue.get("severity", "unknown"),
+                                message=issue.get("message", "unknown issue"),
+                                architecture=issue.get("architecture", "unknown"),
+                                path=issue.get("path", "unknown path"),
+                            )
+                            for issue in issues
+                        )
             raise SystemExit(
-                f"Apple notarization was not accepted: {response.get('status', 'unknown')}"
+                "Apple notarization was not accepted: "
+                f"{response.get('status', 'unknown')}"
+                f" (submission {submission_id or 'unknown'}){issue_summary}"
             )
     _run(
         [

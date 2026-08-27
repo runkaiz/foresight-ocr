@@ -91,7 +91,10 @@ def _platform_target() -> str:
         "x86_64": "x86_64",
         "AMD64": "x86_64",
     }
-    return f"{systems.get(platform.system(), platform.system().lower())}-" f"{machines.get(platform.machine(), platform.machine().lower())}"
+    return (
+        f"{systems.get(platform.system(), platform.system().lower())}-"
+        f"{machines.get(platform.machine(), platform.machine().lower())}"
+    )
 
 
 def engine_home() -> Path:
@@ -99,7 +102,13 @@ def engine_home() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Foresight OCR" / "engines"
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Foresight OCR"
+            / "engines"
+        )
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
         return base / "Foresight OCR" / "engines"
@@ -453,9 +462,7 @@ def _install_engine_locked(
             shutil.rmtree(target)
         if backup.exists():
             backup.replace(target)
-        raise EngineInstallError(
-            f"installed engine did not validate: {status.detail}"
-        )
+        raise EngineInstallError(f"installed engine did not validate: {status.detail}")
     if backup.exists():
         shutil.rmtree(backup)
     return status

@@ -18,6 +18,13 @@ def _configure_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+def _write_fake_python(environment: Path, contents: str) -> Path:
+    python = engines._python_path(environment)
+    python.parent.mkdir(parents=True)
+    python.write_text(contents, encoding="utf-8")
+    return python
+
+
 def test_engine_manifest_reports_missing_shared_installation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -51,9 +58,7 @@ def test_install_engine_builds_then_atomically_publishes_managed_environment(
         event(stage, "started")
         if stage == "python_runtime":
             target = Path(command[-1])
-            python = target / "bin" / "python"
-            python.parent.mkdir(parents=True)
-            python.write_text("fake python", encoding="utf-8")
+            _write_fake_python(target, "fake python")
         event(stage, "completed")
 
     expected = {"paddlepaddle": "3.3.1", "paddleocr": "3.7.0"}
@@ -65,9 +70,7 @@ def test_install_engine_builds_then_atomically_publishes_managed_environment(
     )
 
     target = home / "ppocr-v5"
-    marker = json.loads(
-        (target / engines.ENGINE_MANIFEST).read_text(encoding="utf-8")
-    )
+    marker = json.loads((target / engines.ENGINE_MANIFEST).read_text(encoding="utf-8"))
     assert status.available is True
     assert status.managed is True
     assert marker["managed"] is True
@@ -106,8 +109,7 @@ def test_failed_upgrade_leaves_existing_managed_environment_untouched(
 ) -> None:
     home = _configure_home(tmp_path, monkeypatch)
     target = home / "ppocr-v5"
-    (target / "bin").mkdir(parents=True)
-    (target / "bin" / "python").write_text("old", encoding="utf-8")
+    _write_fake_python(target, "old")
     (target / engines.ENGINE_MANIFEST).write_text(
         json.dumps({"managed": True}), encoding="utf-8"
     )
@@ -132,8 +134,7 @@ def test_install_recovers_last_environment_after_interrupted_atomic_swap(
 ) -> None:
     home = _configure_home(tmp_path, monkeypatch)
     backup = home / ".ppocr-v5.previous"
-    (backup / "bin").mkdir(parents=True)
-    (backup / "bin" / "python").write_text("last good", encoding="utf-8")
+    _write_fake_python(backup, "last good")
     (backup / engines.ENGINE_MANIFEST).write_text(
         json.dumps({"managed": True}), encoding="utf-8"
     )
@@ -144,7 +145,7 @@ def test_install_recovers_last_environment_after_interrupted_atomic_swap(
 
     target = home / "ppocr-v5"
     assert status.available is True
-    assert (target / "bin" / "python").read_text(encoding="utf-8") == "last good"
+    assert engines._python_path(target).read_text(encoding="utf-8") == "last good"
     assert not backup.exists()
 
 

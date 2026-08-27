@@ -586,8 +586,7 @@ def project_import(
         typer.echo(json.dumps(payload, ensure_ascii=False))
         return
     console.print(
-        f"[green]imported[/green] {imported.source.name} "
-        f"({info.page_count} pages)"
+        f"[green]imported[/green] {imported.source.name} ({info.page_count} pages)"
     )
 
 

@@ -85,6 +85,30 @@ def test_codesign_retries_transient_timestamp_failure(
     assert sleeps == [1]
 
 
+def test_command_line_notarization_uses_codesign_requirement(
+    binary_builder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        binary_builder, "_run", lambda command: commands.append(command)
+    )
+
+    executable = tmp_path / "foresight-ocr"
+    binary_builder._verify_macos_notarization(executable)
+
+    assert commands == [
+        [
+            "/usr/bin/codesign",
+            "--verify",
+            "--strict",
+            "--verbose=4",
+            "-R=notarized",
+            "--check-notarization",
+            str(executable),
+        ]
+    ]
+
+
 def test_standalone_build_environment_rejects_dev_and_audit_tools(
     binary_builder, monkeypatch: pytest.MonkeyPatch
 ) -> None:

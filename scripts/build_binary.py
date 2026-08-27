@@ -371,6 +371,21 @@ def _sign_windows(
         _run([signtool, "verify", "/pa", "/v", str(path)])
 
 
+def _verify_macos_notarization(executable: Path) -> None:
+    """Verify notarization for non-app code using Apple's requirement check."""
+    _run(
+        [
+            "/usr/bin/codesign",
+            "--verify",
+            "--strict",
+            "--verbose=4",
+            "-R=notarized",
+            "--check-notarization",
+            str(executable),
+        ]
+    )
+
+
 def _notarize_macos(stage: Path, executable: Path) -> None:
     apple_id = os.environ.get("FORESIGHT_APPLE_ID")
     team_id = os.environ.get("FORESIGHT_APPLE_TEAM_ID")
@@ -446,16 +461,8 @@ def _notarize_macos(stage: Path, executable: Path) -> None:
                 f"{response.get('status', 'unknown')}"
                 f" (submission {submission_id or 'unknown'}){issue_summary}"
             )
-    _run(
-        [
-            "/usr/sbin/spctl",
-            "--assess",
-            "--type",
-            "execute",
-            "--verbose=4",
-            str(executable),
-        ]
-    )
+    print(f"Apple notarization accepted: {response.get('id', 'unknown')}")
+    _verify_macos_notarization(executable)
 
 
 def _write_binary_readme(path: Path, version: str, target: str) -> None:

@@ -138,3 +138,18 @@ def test_windows_installer_signing_gate(
     assert windows_packager._requires_signing("1.0.0")
     monkeypatch.setenv("FORESIGHT_REQUIRE_SIGNING", "1")
     assert windows_packager._requires_signing("0.1.0")
+
+
+def test_release_workflow_has_non_publishing_signed_test() -> None:
+    workflow = (
+        Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "signed_test:" in workflow
+    assert "name: Validate signing configuration" in workflow
+    assert "inputs.signed_test == true" in workflow
+    assert "FORESIGHT_REQUIRE_SIGNING:" in workflow
+    assert (
+        workflow.count("if: github.event_name == 'push' && github.ref_type == 'tag'")
+        == 3
+    )

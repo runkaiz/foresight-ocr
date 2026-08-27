@@ -141,3 +141,16 @@ repositories, that manual candidate is checksum-verified but not attested. A tag
 run uses the complete audit and requires provenance attestation, so it fails until
 every author identity and corpus-derived asset decision in `PUBLICATION.toml` is
 resolved and the repository is public.
+
+To exercise the exact signing and notarization gates without publishing, dispatch
+the manual workflow with `signed_test=true`:
+
+```bash
+gh workflow run Release --ref BRANCH -f signed_test=true
+```
+
+This mode preflights every Apple and Windows signing input, forces signing for
+the macOS CLI, native DMG, Windows standalone payload, and MSI, and submits the
+macOS artifacts to Apple notarization. It retains the manual-run publication
+guards, so it cannot create a GitHub Release, attest artifacts, or publish to
+PyPI. A normal manual candidate leaves `signed_test` false.

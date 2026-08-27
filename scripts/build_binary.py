@@ -328,11 +328,13 @@ def _sign_macos(bundle: Path, identity: str) -> None:
         )
 
 
-def _copy_release_stage(source: Path, stage: Path) -> None:
-    """Copy a bundle without dereferencing macOS framework symlinks."""
+def _copy_release_stage(
+    source: Path, stage: Path, *, preserve_symlinks: bool = False
+) -> None:
+    """Copy a bundle, preserving links only when its platform requires them."""
     if stage.exists():
         shutil.rmtree(stage)
-    shutil.copytree(source, stage, symlinks=True)
+    shutil.copytree(source, stage, symlinks=preserve_symlinks)
 
 
 def _sign_windows(
@@ -582,7 +584,11 @@ def main() -> int:
 
     artifact_name = f"foresight-ocr-{version}-{actual_target}"
     stage = ROOT / "build" / "release" / artifact_name
-    _copy_release_stage(executable.parent, stage)
+    _copy_release_stage(
+        executable.parent,
+        stage,
+        preserve_symlinks=platform.system() == "Darwin",
+    )
     shutil.copy2(ROOT / "LICENSE", stage / "LICENSE")
     _write_binary_readme(stage / "README.txt", version, actual_target)
     _write_third_party_notices(stage / "THIRD_PARTY_NOTICES.txt")

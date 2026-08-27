@@ -50,10 +50,17 @@ def test_release_stage_preserves_framework_symlinks(
     )
 
     stage = tmp_path / "stage"
-    binary_builder._copy_release_stage(source, stage)
+    binary_builder._copy_release_stage(source, stage, preserve_symlinks=True)
 
     assert (stage / "_internal" / "Python.framework" / "Python").is_symlink()
     assert (stage / "_internal" / "Python").is_symlink()
+
+    portable_stage = tmp_path / "portable-stage"
+    binary_builder._copy_release_stage(source, portable_stage)
+    assert not (
+        portable_stage / "_internal" / "Python.framework" / "Python"
+    ).is_symlink()
+    assert not (portable_stage / "_internal" / "Python").is_symlink()
 
 
 def test_codesign_retries_transient_timestamp_failure(

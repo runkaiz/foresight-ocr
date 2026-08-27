@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,48 @@ def test_binary_version_comparisons_are_numeric(binary_builder) -> None:
     assert binary_builder._version_tuple("2.35") < binary_builder._version_tuple(
         "2.100"
     )
+
+
+def test_release_stage_preserves_framework_symlinks(
+    binary_builder, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    version = source / "_internal" / "Python.framework" / "Versions" / "3.12"
+    version.mkdir(parents=True)
+    (version / "Python").write_bytes(b"python")
+    (version.parent / "Current").symlink_to("3.12")
+    (version.parent.parent / "Python").symlink_to("Versions/Current/Python")
+    (source / "_internal" / "Python").symlink_to(
+        "Python.framework/Versions/Current/Python"
+    )
+
+    stage = tmp_path / "stage"
+    binary_builder._copy_release_stage(source, stage)
+
+    assert (stage / "_internal" / "Python.framework" / "Python").is_symlink()
+    assert (stage / "_internal" / "Python").is_symlink()
+
+
+def test_codesign_retries_transient_timestamp_failure(
+    binary_builder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    responses = iter(
+        [
+            subprocess.CompletedProcess(
+                ["codesign"], 1, "", "The timestamp service is not available."
+            ),
+            subprocess.CompletedProcess(["codesign"], 0, "signed\n", ""),
+        ]
+    )
+    sleeps: list[int] = []
+    monkeypatch.setattr(
+        binary_builder.subprocess, "run", lambda *args, **kwargs: next(responses)
+    )
+    monkeypatch.setattr(binary_builder.time, "sleep", sleeps.append)
+
+    binary_builder._run_codesign(["codesign", "artifact"])
+
+    assert sleeps == [1]
 
 
 def test_standalone_build_environment_rejects_dev_and_audit_tools(

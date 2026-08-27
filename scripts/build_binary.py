@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 from importlib.metadata import Distribution, distribution, distributions
 from pathlib import Path
@@ -182,6 +183,19 @@ def _macos_code_files(root: Path) -> list[Path]:
     return sorted(code, key=lambda path: (len(path.parts), str(path)), reverse=True)
 
 
+def _macos_frameworks(root: Path) -> list[Path]:
+    """Return real framework bundles inside-out, excluding symlink aliases."""
+    return sorted(
+        (
+            path
+            for path in root.rglob("*.framework")
+            if path.is_dir() and not path.is_symlink()
+        ),
+        key=lambda path: (len(path.parts), str(path)),
+        reverse=True,
+    )
+
+
 def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
@@ -246,24 +260,79 @@ def _verify_linux_glibc_floor(bundle: Path, maximum: str = "2.35") -> None:
         )
 
 
+def _run_codesign(command: list[str], *, attempts: int = 4) -> None:
+    """Retry only Apple's transient timestamp-service failure."""
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            if result.stdout:
+                sys.stdout.write(result.stdout)
+            if result.stderr:
+                sys.stderr.write(result.stderr)
+            return
+        output = f"{result.stdout}\n{result.stderr}"
+        transient = "timestamp service is not available" in output.casefold()
+        if not transient or attempt == attempts:
+            if result.stdout:
+                sys.stdout.write(result.stdout)
+            if result.stderr:
+                sys.stderr.write(result.stderr)
+            result.check_returncode()
+        delay = 2 ** (attempt - 1)
+        print(
+            "Apple timestamp service was unavailable; retrying codesign "
+            f"in {delay}s ({attempt}/{attempts}).",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+
+
+def _codesign_macos_path(path: Path, identity: str) -> None:
+    _run_codesign(
+        [
+            "/usr/bin/codesign",
+            "--force",
+            "--options",
+            "runtime",
+            "--timestamp",
+            "--sign",
+            identity,
+            str(path),
+        ]
+    )
+
+
 def _sign_macos(bundle: Path, identity: str) -> None:
     code = _macos_code_files(bundle)
     if not code:
         raise SystemExit(f"no Mach-O files found in {bundle}")
     for path in code:
+        _codesign_macos_path(path, identity)
+        _run(["/usr/bin/codesign", "--verify", "--strict", str(path)])
+    for framework in _macos_frameworks(bundle):
+        _codesign_macos_path(framework, identity)
         _run(
             [
                 "/usr/bin/codesign",
-                "--force",
-                "--options",
-                "runtime",
-                "--timestamp",
-                "--sign",
-                identity,
-                str(path),
+                "--verify",
+                "--deep",
+                "--strict",
+                str(framework),
             ]
         )
-        _run(["/usr/bin/codesign", "--verify", "--strict", str(path)])
+
+
+def _copy_release_stage(source: Path, stage: Path) -> None:
+    """Copy a bundle without dereferencing macOS framework symlinks."""
+    if stage.exists():
+        shutil.rmtree(stage)
+    shutil.copytree(source, stage, symlinks=True)
 
 
 def _sign_windows(
@@ -513,9 +582,7 @@ def main() -> int:
 
     artifact_name = f"foresight-ocr-{version}-{actual_target}"
     stage = ROOT / "build" / "release" / artifact_name
-    if stage.exists():
-        shutil.rmtree(stage)
-    shutil.copytree(executable.parent, stage)
+    _copy_release_stage(executable.parent, stage)
     shutil.copy2(ROOT / "LICENSE", stage / "LICENSE")
     _write_binary_readme(stage / "README.txt", version, actual_target)
     _write_third_party_notices(stage / "THIRD_PARTY_NOTICES.txt")

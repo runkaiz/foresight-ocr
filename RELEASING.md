@@ -154,3 +154,15 @@ the macOS CLI, native DMG, Windows standalone payload, and MSI, and submits the
 macOS artifacts to Apple notarization. It retains the manual-run publication
 guards, so it cannot create a GitHub Release, attest artifacts, or publish to
 PyPI. A normal manual candidate leaves `signed_test` false.
+
+When Windows Authenticode is not configured, test only the Apple signing and
+notarization path with:
+
+```bash
+gh workflow run Release --ref BRANCH -f apple_signed_test=true
+```
+
+This requires all Apple credentials and forces Developer ID signing and Apple
+notarization for both macOS CLI archives and the native DMG. Windows artifacts
+remain unsigned in this manual candidate. Tag releases still require both Apple
+and Windows signing, so this test mode cannot weaken the publication gate.

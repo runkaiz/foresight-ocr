@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       signed_test:
-        description: Force signing and notarization without publishing
+        description: Force Apple and Windows signing without publishing
+        required: true
+        default: false
+        type: boolean
+      apple_signed_test:
+        description: Force only Apple signing and notarization without publishing
         required: true
         default: false
         type: boolean
@@ -21,10 +26,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - name: Require every signing input for tags and signed tests
+      - name: Require selected signing inputs for tags and signed tests
         shell: bash
         env:
-          SIGNING_REQUIRED: ${{ github.ref_type == 'tag' || inputs.signed_test == true }}
+          APPLE_SIGNING_REQUIRED: ${{ github.ref_type == 'tag' || inputs.signed_test == true || inputs.apple_signed_test == true }}
+          WINDOWS_SIGNING_REQUIRED: ${{ github.ref_type == 'tag' || inputs.signed_test == true }}
           APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
           APPLE_DEVELOPER_ID_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
@@ -35,37 +41,52 @@ jobs:
           WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
-          if [[ "$SIGNING_REQUIRED" != "true" ]]; then
+          if [[ "$APPLE_SIGNING_REQUIRED" != "true" \
+            && "$WINDOWS_SIGNING_REQUIRED" != "true" ]]; then
             echo "Unsigned manual candidate; signing preflight is not required."
             exit 0
           fi
 
           missing=()
-          for name in \
-            APPLE_DEVELOPER_ID_P12 \
-            APPLE_DEVELOPER_ID_PASSWORD \
-            APPLE_DEVELOPER_ID_IDENTITY \
-            APPLE_NOTARY_ID \
-            APPLE_TEAM_ID \
-            APPLE_APP_PASSWORD \
-            WINDOWS_SIGNING_PFX \
-            WINDOWS_SIGNING_PASSWORD \
-            WINDOWS_TIMESTAMP_URL; do
-            if [[ -z "${!name}" ]]; then
-              missing+=("$name")
-            fi
-          done
+          if [[ "$APPLE_SIGNING_REQUIRED" == "true" ]]; then
+            for name in \
+              APPLE_DEVELOPER_ID_P12 \
+              APPLE_DEVELOPER_ID_PASSWORD \
+              APPLE_DEVELOPER_ID_IDENTITY \
+              APPLE_NOTARY_ID \
+              APPLE_TEAM_ID \
+              APPLE_APP_PASSWORD; do
+              if [[ -z "${!name}" ]]; then
+                missing+=("$name")
+              fi
+            done
+          fi
+          if [[ "$WINDOWS_SIGNING_REQUIRED" == "true" ]]; then
+            for name in \
+              WINDOWS_SIGNING_PFX \
+              WINDOWS_SIGNING_PASSWORD \
+              WINDOWS_TIMESTAMP_URL; do
+              if [[ -z "${!name}" ]]; then
+                missing+=("$name")
+              fi
+            done
+          fi
           if (( ${#missing[@]} )); then
             printf 'Missing signed-release configuration: %s\n' "${missing[*]}" >&2
             exit 1
           fi
-          if [[ "$WINDOWS_TIMESTAMP_URL" != https://* ]]; then
+          if [[ "$WINDOWS_SIGNING_REQUIRED" == "true" \
+            && "$WINDOWS_TIMESTAMP_URL" != https://* ]]; then
             echo "WINDOWS_TIMESTAMP_URL must be an HTTPS RFC 3161 endpoint." >&2
             exit 1
           fi
-          printf '%s' "$APPLE_DEVELOPER_ID_P12" | base64 --decode >/dev/null
-          printf '%s' "$WINDOWS_SIGNING_PFX" | base64 --decode >/dev/null
-          echo "All signed-release inputs are present and certificate blobs decode."
+          if [[ "$APPLE_SIGNING_REQUIRED" == "true" ]]; then
+            printf '%s' "$APPLE_DEVELOPER_ID_P12" | base64 --decode >/dev/null
+          fi
+          if [[ "$WINDOWS_SIGNING_REQUIRED" == "true" ]]; then
+            printf '%s' "$WINDOWS_SIGNING_PFX" | base64 --decode >/dev/null
+          fi
+          echo "Selected signed-release inputs are present and certificate blobs decode."
 
   package:
     name: Build and verify Python distributions
@@ -239,7 +260,7 @@ jobs:
           FORESIGHT_APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           FORESIGHT_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
           FORESIGHT_WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
-          FORESIGHT_REQUIRE_SIGNING: ${{ (github.ref_type == 'tag' || inputs.signed_test == true) && '1' || '0' }}
+          FORESIGHT_REQUIRE_SIGNING: ${{ (github.ref_type == 'tag' || inputs.signed_test == true || (startsWith(matrix.target, 'macos-') && inputs.apple_signed_test == true)) && '1' || '0' }}
         run: uv run python scripts/build_binary.py --target ${{ matrix.target }}
       - name: Build and smoke-test Linux packages
         if: startsWith(matrix.target, 'linux-')
@@ -342,7 +363,7 @@ jobs:
           FORESIGHT_APPLE_ID: ${{ secrets.APPLE_NOTARY_ID }}
           FORESIGHT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           FORESIGHT_APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          FORESIGHT_REQUIRE_SIGNING: ${{ (github.ref_type == 'tag' || inputs.signed_test == true) && '1' || '0' }}
+          FORESIGHT_REQUIRE_SIGNING: ${{ (github.ref_type == 'tag' || inputs.signed_test == true || inputs.apple_signed_test == true) && '1' || '0' }}
         run: |
           if [[ "$FORESIGHT_REQUIRE_SIGNING" == "1" ]]; then
             CONFIGURATION=release CREATE_DMG=1 NOTARIZE=1 \

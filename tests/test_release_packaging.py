@@ -146,8 +146,13 @@ def test_release_workflow_has_non_publishing_signed_test() -> None:
     ).read_text(encoding="utf-8")
 
     assert "signed_test:" in workflow
+    assert "apple_signed_test:" in workflow
     assert "name: Validate signing configuration" in workflow
     assert "inputs.signed_test == true" in workflow
+    assert "inputs.apple_signed_test == true" in workflow
+    assert "APPLE_SIGNING_REQUIRED:" in workflow
+    assert "WINDOWS_SIGNING_REQUIRED:" in workflow
+    assert "startsWith(matrix.target, 'macos-')" in workflow
     assert "FORESIGHT_REQUIRE_SIGNING:" in workflow
     assert (
         workflow.count("if: github.event_name == 'push' && github.ref_type == 'tag'")

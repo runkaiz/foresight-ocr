@@ -99,7 +99,7 @@ sed \
 
 typeset -a MACH_O_FILES
 while IFS= read -r -d '' candidate; do
-    if /usr/bin/file -b "$candidate" | rg -q 'Mach-O'; then
+    if /usr/bin/file -b "$candidate" | /usr/bin/grep -q 'Mach-O'; then
         MACH_O_FILES+=("$candidate")
     fi
 done < <(find "$APP_DIR" -type f -print0)
@@ -109,7 +109,8 @@ if [[ "$CONFIGURATION" == "release" ]]; then
         print -u2 "Release builds require SIGN_IDENTITY with a Developer ID Application identity."
         exit 2
     fi
-    if ! security find-identity -v -p codesigning | rg -F -q -- "$SIGN_IDENTITY"; then
+    if ! security find-identity -v -p codesigning \
+        | /usr/bin/grep -F -q -- "$SIGN_IDENTITY"; then
         print -u2 "Signing identity is not available in the current keychain: $SIGN_IDENTITY"
         exit 2
     fi

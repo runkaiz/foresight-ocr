@@ -158,3 +158,12 @@ def test_release_workflow_has_non_publishing_signed_test() -> None:
         workflow.count("if: github.event_name == 'push' && github.ref_type == 'tag'")
         == 3
     )
+
+
+def test_macos_release_builder_uses_only_system_file_matcher() -> None:
+    script = (
+        Path(__file__).parents[1] / "clients" / "macos" / "scripts" / "build-app.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "| /usr/bin/grep " in script
+    assert "| rg " not in script

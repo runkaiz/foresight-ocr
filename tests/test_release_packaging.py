@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import sys
 import tarfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -15,6 +16,7 @@ def _load_script(name: str):
     spec = importlib.util.spec_from_file_location(name.removesuffix(".py"), path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -32,6 +34,16 @@ def aur_packager():
 @pytest.fixture
 def windows_packager():
     return _load_script("build_windows_installer.py")
+
+
+@pytest.fixture
+def release_policy():
+    return _load_script("release_signing_policy.py")
+
+
+@pytest.fixture
+def windows_status_verifier():
+    return _load_script("verify_windows_signing_status.py")
 
 
 def _standalone_stage(root: Path, target: str, *, windows: bool = False) -> Path:
@@ -140,6 +152,73 @@ def test_windows_installer_signing_gate(
     assert windows_packager._requires_signing("0.1.0")
 
 
+@pytest.mark.parametrize(
+    (
+        "ref_type",
+        "ref_name",
+        "signed_test",
+        "apple_signed_test",
+        "require_windows",
+        "expected",
+    ),
+    [
+        ("branch", "main", "false", "false", "false", (False, False)),
+        ("branch", "main", "true", "false", "false", (True, True)),
+        ("branch", "main", "false", "true", "false", (True, False)),
+        ("branch", "main", "false", "false", "true", (False, True)),
+        ("tag", "v0.1.0", "false", "false", "false", (True, False)),
+        ("tag", "v1.0.0", "false", "false", "false", (True, True)),
+        ("tag", "v2.3.4", "false", "false", "false", (True, True)),
+    ],
+)
+def test_release_signing_policy(
+    release_policy,
+    ref_type: str,
+    ref_name: str,
+    signed_test: str,
+    apple_signed_test: str,
+    require_windows: str,
+    expected: tuple[bool, bool],
+) -> None:
+    policy = release_policy.resolve_policy(
+        ref_type=ref_type,
+        ref_name=ref_name,
+        signed_test=signed_test,
+        apple_signed_test=apple_signed_test,
+        require_windows_signing=require_windows,
+    )
+    assert (policy.apple_required, policy.windows_required) == expected
+
+
+def test_release_signing_policy_rejects_invalid_configuration(release_policy) -> None:
+    with pytest.raises(ValueError, match="must be true or false"):
+        release_policy.resolve_policy(
+            ref_type="branch",
+            ref_name="main",
+            require_windows_signing="sometimes",
+        )
+    with pytest.raises(ValueError, match="cannot determine major version"):
+        release_policy.resolve_policy(ref_type="tag", ref_name="release-0.1.0")
+
+
+@pytest.mark.parametrize("signed", [False, True])
+def test_windows_signing_disclosure_matches_built_artifacts(
+    windows_packager,
+    windows_status_verifier,
+    tmp_path: Path,
+    signed: bool,
+) -> None:
+    version = "0.1.0"
+    for suffix in ("msi", "zip"):
+        (tmp_path / f"foresight-ocr-{version}-windows-x86_64.{suffix}").touch()
+    status = windows_packager._write_signing_status(tmp_path, version, signed=signed)
+
+    expected = "signed" if signed else "unsigned"
+    windows_status_verifier.verify(status, expected)
+    with pytest.raises(AssertionError, match="disclosure mismatch"):
+        windows_status_verifier.verify(status, "unsigned" if signed else "signed")
+
+
 def test_release_workflow_has_non_publishing_signed_test() -> None:
     workflow = (
         Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
@@ -152,12 +231,30 @@ def test_release_workflow_has_non_publishing_signed_test() -> None:
     assert "inputs.apple_signed_test == true" in workflow
     assert "APPLE_SIGNING_REQUIRED:" in workflow
     assert "WINDOWS_SIGNING_REQUIRED:" in workflow
+    assert "scripts/release_signing_policy.py" in workflow
+    assert "vars.REQUIRE_WINDOWS_SIGNING" in workflow
+    assert "steps.policy.outputs.apple_signing_required" in workflow
+    assert "steps.policy.outputs.windows_signing_required" in workflow
+    assert "needs.signing-preflight.outputs.windows_signing_required" in workflow
+    assert "PUBLICATION_AUDIT_REQUIRED:" in workflow
+    assert "scripts/verify_windows_signing_status.py" in workflow
+    assert "windows-x86_64-signing.json" in workflow
+    assert "name: Run native application tests" in workflow
     assert "startsWith(matrix.target, 'macos-')" in workflow
     assert "FORESIGHT_REQUIRE_SIGNING:" in workflow
     assert (
         workflow.count("if: github.event_name == 'push' && github.ref_type == 'tag'")
         == 3
     )
+
+
+def test_ci_runs_native_macos_tests() -> None:
+    workflow = (
+        Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "name: Test native macOS application" in workflow
+    assert "xcrun swift test --package-path clients/macos" in workflow
 
 
 def test_macos_release_builder_uses_only_system_file_matcher() -> None:

@@ -41,6 +41,19 @@ jobs:
       - name: Smoke-test CLI
         run: uv run python scripts/smoke_cli_distribution.py
 
+  native-macos:
+    name: Test native macOS application
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Run Swift tests
+        env:
+          DEVELOPER_DIR: /Applications/Xcode-beta.app/Contents/Developer
+        run: xcrun swift test --package-path clients/macos
+
   package:
     name: Verify Python distributions
     runs-on: ubuntu-22.04

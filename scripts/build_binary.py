@@ -563,7 +563,12 @@ def main() -> int:
         certificate_value = os.environ.get("FORESIGHT_WINDOWS_CERTIFICATE")
         password = os.environ.get("FORESIGHT_WINDOWS_CERTIFICATE_PASSWORD")
         timestamp = os.environ.get("FORESIGHT_WINDOWS_TIMESTAMP_URL")
-        if certificate_value and password and timestamp:
+        signtool = os.environ.get("FORESIGHT_SIGNTOOL")
+        signing_values = (certificate_value, password, timestamp, signtool)
+        if any(signing_values) and not all(signing_values):
+            raise SystemExit("Windows signing configuration is incomplete")
+        if all(signing_values):
+            assert certificate_value and password and timestamp
             certificate = Path(certificate_value)
             if not certificate.is_file():
                 raise SystemExit(

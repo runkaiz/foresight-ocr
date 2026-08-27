@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -32,6 +33,24 @@ def _requires_signing(version: str) -> bool:
         int(version.split(".", 1)[0]) >= 1
         or os.environ.get("FORESIGHT_REQUIRE_SIGNING") == "1"
     )
+
+
+def _write_signing_status(dist: Path, version: str, *, signed: bool) -> Path:
+    path = dist / f"foresight-ocr-{version}-windows-x86_64-signing.json"
+    document = {
+        "schema_version": 1,
+        "version": version,
+        "target": "windows-x86_64",
+        "authenticode": "signed" if signed else "unsigned",
+        "artifacts": [
+            f"foresight-ocr-{version}-windows-x86_64.msi",
+            f"foresight-ocr-{version}-windows-x86_64.zip",
+        ],
+    }
+    path.write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return path
 
 
 def _wxs(version: str) -> str:
@@ -217,12 +236,17 @@ def main() -> int:
         os.environ.get("FORESIGHT_WINDOWS_TIMESTAMP_URL"),
         os.environ.get("FORESIGHT_SIGNTOOL"),
     )
-    if all(signing_values):
+    signed = all(signing_values)
+    if any(signing_values) and not signed:
+        raise SystemExit("Windows signing configuration is incomplete")
+    if signed:
         _sign(artifact)
     elif _requires_signing(version):
         _sign(artifact)
     _smoke_installed(artifact, version)
+    status = _write_signing_status(dist, version, signed=signed)
     print(artifact)
+    print(status)
     return 0
 
 

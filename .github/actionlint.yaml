@@ -1,6 +1,7 @@
 self-hosted-runner:
   # GitHub-hosted public-preview label documented in the runners reference.
   labels:
+    - macos-15-intel
     - xcode-27
 
 # Configuration variables in array of strings defined in your repository or

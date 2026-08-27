@@ -147,8 +147,11 @@ foresight-ocr doctor
 
 The MSI installs under `Program Files` and adds `foresight-ocr` to the system
 `PATH`. The ZIP remains available when a portable, non-installed copy is
-preferred. Signed releases Authenticode-sign both the bundled executables and
-the MSI so users do not need to bypass SmartScreen.
+preferred. Current `0.x` Windows artifacts are intentionally unsigned and may
+show a SmartScreen warning. Check the release's
+`foresight-ocr-VERSION-windows-x86_64-signing.json` disclosure rather than
+assuming a signature is present. Version 1.0 and newer are release-gated on
+Authenticode for both the bundled executables and MSI.
 
 ### Python package
 

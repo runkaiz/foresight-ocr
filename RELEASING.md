@@ -20,7 +20,7 @@
 - Register `foresight-ocr` as a PyPI Trusted Publisher for `.github/workflows/release.yml`
   and the protected `pypi` environment. Require manual approval for that environment.
 
-## Installer and 1.0 signing gates
+## Installer signing policy
 
 Standalone archives are reproducibly built and attested, but public 1.0 desktop
 downloads must also satisfy each operating system's trust path:
@@ -32,19 +32,29 @@ downloads must also satisfy each operating system's trust path:
 - Exercise each signed archive on a clean, non-developer machine without
   bypassing Gatekeeper or SmartScreen.
 
-The release workflow expects these repository secrets:
+The release workflow always expects these repository secrets for tagged macOS
+artifacts:
 
 - `APPLE_DEVELOPER_ID_P12`, `APPLE_DEVELOPER_ID_PASSWORD`, and
   `APPLE_DEVELOPER_ID_IDENTITY` for Developer ID signing;
-- `APPLE_NOTARY_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD` for `notarytool`;
-- `WINDOWS_SIGNING_PFX` and `WINDOWS_SIGNING_PASSWORD` for Authenticode.
+- `APPLE_NOTARY_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD` for `notarytool`.
 
-Set the repository variable `WINDOWS_TIMESTAMP_URL` to the RFC 3161 timestamp
-service supplied by the Windows certificate issuer. Certificate blobs are
-base64-encoded PKCS#12/PFX files. Every tagged release sets the signing gate;
-version 1.0.0 and newer also enforce it in local builds. The standalone and
-installer builders fail if the platform's signing inputs are absent; macOS also
-fails if Apple notarization or Gatekeeper assessment does not succeed.
+Windows `0.x` artifacts are intentionally unsigned until an Authenticode
+identity is configured. Each release includes a
+`foresight-ocr-VERSION-windows-x86_64-signing.json` disclosure that is checked
+against the workflow's resolved policy. To enable Windows signing before 1.0,
+set the repository variable `REQUIRE_WINDOWS_SIGNING=true` and configure:
+
+- `WINDOWS_SIGNING_PFX` and `WINDOWS_SIGNING_PASSWORD` as repository secrets;
+- `WINDOWS_TIMESTAMP_URL` as an HTTPS RFC 3161 repository variable.
+
+Use the timestamp service supplied by the Windows certificate issuer.
+Certificate blobs are base64-encoded PKCS#12/PFX files. Tagged `0.x` releases
+require Apple signing and follow `REQUIRE_WINDOWS_SIGNING`; tagged 1.0.0 and
+newer require both platforms regardless of that variable. The same 1.0 Windows
+gate is enforced in local builds. The standalone and installer builders reject
+partial signing configuration; macOS also fails if Apple notarization or
+Gatekeeper assessment does not succeed.
 
 Linux release jobs build and smoke-test AppImage, DEB, and RPM packages for
 x86-64 and ARM64 from the same standalone payload. The merge job generates an
@@ -85,6 +95,8 @@ uv run python scripts/audit_secrets.py
 uv run python scripts/verify_release_artifacts.py
 uv run python scripts/verify_standalone_archive.py dist/foresight-ocr-*-*.tar.gz \
   dist/foresight-ocr-*-*.zip
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+  xcrun swift test --package-path clients/macos
 uv run foresight-ocr --version
 uv run foresight-ocr --help
 git diff --check
@@ -120,8 +132,10 @@ Corpus-specific benchmarks, profiles, screenshots, and reports must not appear
 in either installable archive; `verify_release_artifacts.py` enforces this.
 Every standalone archive must also contain the project license, its target-specific
 README, and deterministic `THIRD_PARTY_NOTICES.txt` covering the complete installed
-runtime dependency closure. The standalone verifier rejects missing notices, links,
-path traversal, sensitive file types, and unexpected archive roots.
+runtime dependency closure. The standalone verifier rejects missing notices,
+unsafe links, path traversal, sensitive file types, and unexpected archive
+roots. Only lexically internal macOS bundle symlinks are accepted; Linux and
+Windows archives remain link-free.
 `scripts/check_platform_wheels.py` must resolve every supported target with binary
 wheels only; this prevents an install from silently requiring a local compiler or
 raising the documented macOS deployment floor.
@@ -134,16 +148,17 @@ push the tag. The tag workflow rebuilds and tests all assets, publishes a GitHub
 release with checksums and provenance attestations, and sends only the wheel and
 source distribution to PyPI through the protected environment.
 
-A manual workflow run is a private release-candidate build: it uses the
-technical publication audit and never creates a GitHub release or publishes to
-PyPI. Because GitHub does not offer artifact attestations for user-owned private
-repositories, that manual candidate is checksum-verified but not attested. A tag
-run uses the complete audit and requires provenance attestation, so it fails until
-every author identity and corpus-derived asset decision in `PUBLICATION.toml` is
-resolved and the repository is public.
+A manual workflow run is a private release-candidate build and never creates a
+GitHub release or publishes to PyPI. Normal unsigned candidates use the
+technical publication audit; either signed test uses the same complete audit as
+a tag. Because GitHub does not offer artifact attestations for user-owned
+private repositories, a manual candidate is checksum-verified but not attested.
+A tag run requires provenance attestation, so it fails until every author
+identity and corpus-derived asset decision in `PUBLICATION.toml` is resolved and
+the repository is public.
 
-To exercise the exact signing and notarization gates without publishing, dispatch
-the manual workflow with `signed_test=true`:
+To exercise every signing and notarization gate without publishing, dispatch the
+manual workflow with `signed_test=true`:
 
 ```bash
 gh workflow run Release --ref BRANCH -f signed_test=true
@@ -155,14 +170,15 @@ macOS artifacts to Apple notarization. It retains the manual-run publication
 guards, so it cannot create a GitHub Release, attest artifacts, or publish to
 PyPI. A normal manual candidate leaves `signed_test` false.
 
-When Windows Authenticode is not configured, test only the Apple signing and
-notarization path with:
+When Windows Authenticode is not configured, exercise the current `0.x` tag
+policy with:
 
 ```bash
 gh workflow run Release --ref BRANCH -f apple_signed_test=true
 ```
 
-This requires all Apple credentials and forces Developer ID signing and Apple
-notarization for both macOS CLI archives and the native DMG. Windows artifacts
-remain unsigned in this manual candidate. Tag releases still require both Apple
-and Windows signing, so this test mode cannot weaken the publication gate.
+This requires all Apple credentials, runs the complete publication audit, and
+forces Developer ID signing and Apple notarization for both macOS CLI archives
+and the native DMG. Windows follows the repository policy and is currently
+unsigned. A 1.0-or-newer tag still requires Authenticode even when
+`REQUIRE_WINDOWS_SIGNING=false`.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -36,9 +37,7 @@ def test_binary_version_comparisons_are_numeric(binary_builder) -> None:
     )
 
 
-def test_release_stage_preserves_framework_symlinks(
-    binary_builder, tmp_path: Path
-) -> None:
+def _framework_bundle(tmp_path: Path) -> Path:
     source = tmp_path / "source"
     version = source / "_internal" / "Python.framework" / "Versions" / "3.12"
     version.mkdir(parents=True)
@@ -48,6 +47,13 @@ def test_release_stage_preserves_framework_symlinks(
     (source / "_internal" / "Python").symlink_to(
         "Python.framework/Versions/Current/Python"
     )
+    return source
+
+
+def test_release_stage_preserves_framework_symlinks(
+    binary_builder, tmp_path: Path
+) -> None:
+    source = _framework_bundle(tmp_path)
 
     stage = tmp_path / "stage"
     binary_builder._copy_release_stage(source, stage, preserve_symlinks=True)
@@ -55,6 +61,15 @@ def test_release_stage_preserves_framework_symlinks(
     assert (stage / "_internal" / "Python.framework" / "Python").is_symlink()
     assert (stage / "_internal" / "Python").is_symlink()
 
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows cannot dereference macOS framework-style relative symlinks",
+)
+def test_release_stage_dereferences_links_for_portable_archives(
+    binary_builder, tmp_path: Path
+) -> None:
+    source = _framework_bundle(tmp_path)
     portable_stage = tmp_path / "portable-stage"
     binary_builder._copy_release_stage(source, portable_stage)
     assert not (

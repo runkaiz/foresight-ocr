@@ -39,7 +39,7 @@ derived artifacts, and database. They never need a `.venv`.
 
 ```bash
 cd clients/macos
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcrun swift test
+./scripts/test.sh
 ./scripts/build-app.sh
 open "dist/Foresight OCR.app"
 ```

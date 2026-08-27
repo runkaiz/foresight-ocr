@@ -63,6 +63,9 @@ REQUIRED_SDIST = {
     "packaging/linux/foresight-ocr.svg",
     "packaging/linux/AppImage-runtime-LICENSE.txt",
     "clients/macos/Resources/Info.plist",
+    "clients/macos/Package.swift",
+    "clients/macos/scripts/build-app.sh",
+    "clients/macos/scripts/test.sh",
     "src/foresight_ocr/review/app.html",
 }
 

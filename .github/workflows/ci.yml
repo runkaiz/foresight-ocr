@@ -50,9 +50,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run Swift tests
-        env:
-          DEVELOPER_DIR: /Applications/Xcode-beta.app/Contents/Developer
-        run: xcrun swift test --package-path clients/macos
+        run: clients/macos/scripts/test.sh
 
   package:
     name: Verify Python distributions

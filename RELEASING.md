@@ -95,8 +95,7 @@ uv run python scripts/audit_secrets.py
 uv run python scripts/verify_release_artifacts.py
 uv run python scripts/verify_standalone_archive.py dist/foresight-ocr-*-*.tar.gz \
   dist/foresight-ocr-*-*.zip
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
-  xcrun swift test --package-path clients/macos
+clients/macos/scripts/test.sh
 uv run foresight-ocr --version
 uv run foresight-ocr --help
 git diff --check

@@ -254,7 +254,7 @@ def test_ci_runs_native_macos_tests() -> None:
     ).read_text(encoding="utf-8")
 
     assert "name: Test native macOS application" in workflow
-    assert "xcrun swift test --package-path clients/macos" in workflow
+    assert "clients/macos/scripts/test.sh" in workflow
 
 
 def test_macos_release_builder_uses_only_system_file_matcher() -> None:

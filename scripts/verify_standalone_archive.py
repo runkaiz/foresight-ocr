@@ -38,20 +38,16 @@ def _validate_name(raw: str, expected_root: str) -> PurePosixPath:
     return name
 
 
-def _validate_macos_framework_symlink(
+def _validate_macos_internal_symlink(
     name: PurePosixPath, raw_target: str, root: str
 ) -> None:
-    framework = PurePosixPath(root, "_internal", "Python.framework")
-    python_alias = PurePosixPath(root, "_internal", "Python")
-    if name != python_alias and framework not in name.parents:
-        raise AssertionError(f"unsafe macOS framework link: {name}")
     if (
         not raw_target
         or "\\" in raw_target
         or PurePosixPath(raw_target).is_absolute()
         or unicodedata.normalize("NFC", raw_target) != raw_target
     ):
-        raise AssertionError(f"unsafe macOS framework link target: {raw_target!r}")
+        raise AssertionError(f"unsafe macOS archive link target: {raw_target!r}")
 
     resolved_parts: list[str] = []
     for part in (name.parent / PurePosixPath(raw_target)).parts:
@@ -60,18 +56,19 @@ def _validate_macos_framework_symlink(
         if part == "..":
             if not resolved_parts:
                 raise AssertionError(
-                    f"unsafe macOS framework link target: {raw_target!r}"
+                    f"unsafe macOS archive link target: {raw_target!r}"
                 )
             resolved_parts.pop()
         else:
             resolved_parts.append(part)
     resolved = PurePosixPath(*resolved_parts)
-    if framework not in resolved.parents:
-        raise AssertionError(f"unsafe macOS framework link target: {raw_target!r}")
+    archive_root = PurePosixPath(root)
+    if archive_root not in resolved.parents:
+        raise AssertionError(f"unsafe macOS archive link target: {raw_target!r}")
 
 
 def _read_tar(
-    path: Path, root: str, *, allow_macos_framework_symlinks: bool = False
+    path: Path, root: str, *, allow_macos_internal_symlinks: bool = False
 ) -> tuple[set[PurePosixPath], dict[str, bytes]]:
     names: set[PurePosixPath] = set()
     folded_names: set[str] = set()
@@ -88,11 +85,11 @@ def _read_tar(
                     f"standalone archive contains a link: {member.name}"
                 )
             if member.issym():
-                if not allow_macos_framework_symlinks:
+                if not allow_macos_internal_symlinks:
                     raise AssertionError(
                         f"standalone archive contains a link: {member.name}"
                     )
-                _validate_macos_framework_symlink(name, member.linkname, root)
+                _validate_macos_internal_symlink(name, member.linkname, root)
                 continue
             if not (member.isdir() or member.isfile()):
                 raise AssertionError(
@@ -167,7 +164,7 @@ def verify(path: Path) -> None:
         names, payloads = _read_tar(
             path,
             root,
-            allow_macos_framework_symlinks=expected_target.startswith("macos-"),
+            allow_macos_internal_symlinks=expected_target.startswith("macos-"),
         )
 
     required = {

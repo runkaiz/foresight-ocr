@@ -82,6 +82,11 @@ def test_macos_tar_allows_safe_framework_symlinks(
             f"{root}/_internal/Python.framework/Versions/Current",
             "3.12",
         )
+        _tar_symlink(
+            archive,
+            f"{root}/_internal/libIex-3_3.dylib",
+            "cv2/.dylibs/libIex-3_3.dylib",
+        )
 
     archive_verifier.verify(path)
 
@@ -100,11 +105,12 @@ def test_linux_tar_rejects_symlinks(archive_verifier, tmp_path: Path) -> None:
     ("name", "target"),
     [
         ("_internal/Python", "../../../outside"),
-        ("_internal/alias", "Python.framework/Versions/Current/Python"),
+        ("_internal/root", "../.."),
         ("_internal/Python.framework/Python", "/tmp/outside"),
+        ("_internal/library", "..\\..\\outside"),
     ],
 )
-def test_macos_tar_rejects_unsafe_framework_symlinks(
+def test_macos_tar_rejects_unsafe_internal_symlinks(
     archive_verifier, tmp_path: Path, name: str, target: str
 ) -> None:
     path = tmp_path / "foresight-ocr-1.0.0-macos-x86_64.tar.gz"
@@ -112,7 +118,7 @@ def test_macos_tar_rejects_unsafe_framework_symlinks(
     with tarfile.open(path, "w:gz") as archive:
         _tar_symlink(archive, f"{root}/{name}", target)
 
-    with pytest.raises(AssertionError, match="unsafe macOS framework link"):
+    with pytest.raises(AssertionError, match="unsafe macOS archive link"):
         archive_verifier.verify(path)
 
 

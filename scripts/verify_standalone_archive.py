@@ -38,7 +38,41 @@ def _validate_name(raw: str, expected_root: str) -> PurePosixPath:
     return name
 
 
-def _read_tar(path: Path, root: str) -> tuple[set[PurePosixPath], dict[str, bytes]]:
+def _validate_macos_framework_symlink(
+    name: PurePosixPath, raw_target: str, root: str
+) -> None:
+    framework = PurePosixPath(root, "_internal", "Python.framework")
+    python_alias = PurePosixPath(root, "_internal", "Python")
+    if name != python_alias and framework not in name.parents:
+        raise AssertionError(f"unsafe macOS framework link: {name}")
+    if (
+        not raw_target
+        or "\\" in raw_target
+        or PurePosixPath(raw_target).is_absolute()
+        or unicodedata.normalize("NFC", raw_target) != raw_target
+    ):
+        raise AssertionError(f"unsafe macOS framework link target: {raw_target!r}")
+
+    resolved_parts: list[str] = []
+    for part in (name.parent / PurePosixPath(raw_target)).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved_parts:
+                raise AssertionError(
+                    f"unsafe macOS framework link target: {raw_target!r}"
+                )
+            resolved_parts.pop()
+        else:
+            resolved_parts.append(part)
+    resolved = PurePosixPath(*resolved_parts)
+    if framework not in resolved.parents:
+        raise AssertionError(f"unsafe macOS framework link target: {raw_target!r}")
+
+
+def _read_tar(
+    path: Path, root: str, *, allow_macos_framework_symlinks: bool = False
+) -> tuple[set[PurePosixPath], dict[str, bytes]]:
     names: set[PurePosixPath] = set()
     folded_names: set[str] = set()
     payloads: dict[str, bytes] = {}
@@ -49,10 +83,17 @@ def _read_tar(path: Path, root: str) -> tuple[set[PurePosixPath], dict[str, byte
             if folded in folded_names:
                 raise AssertionError(f"duplicate/case-colliding member: {member.name}")
             folded_names.add(folded)
-            if member.issym() or member.islnk():
+            if member.islnk():
                 raise AssertionError(
                     f"standalone archive contains a link: {member.name}"
                 )
+            if member.issym():
+                if not allow_macos_framework_symlinks:
+                    raise AssertionError(
+                        f"standalone archive contains a link: {member.name}"
+                    )
+                _validate_macos_framework_symlink(name, member.linkname, root)
+                continue
             if not (member.isdir() or member.isfile()):
                 raise AssertionError(
                     f"standalone archive contains a special file: {member.name}"
@@ -119,8 +160,15 @@ def verify(path: Path) -> None:
     if len(target) != 2:
         raise AssertionError(f"cannot determine target from {path.name}")
     executable = "foresight-ocr.exe" if path.suffix == ".zip" else "foresight-ocr"
-    reader = _read_zip if path.suffix == ".zip" else _read_tar
-    names, payloads = reader(path, root)
+    expected_target = "-".join(target)
+    if path.suffix == ".zip":
+        names, payloads = _read_zip(path, root)
+    else:
+        names, payloads = _read_tar(
+            path,
+            root,
+            allow_macos_framework_symlinks=expected_target.startswith("macos-"),
+        )
 
     required = {
         PurePosixPath(root, executable),
@@ -133,7 +181,6 @@ def verify(path: Path) -> None:
         raise AssertionError(f"standalone archive is missing: {missing}")
 
     readme = payloads["README.txt"].decode("utf-8")
-    expected_target = "-".join(target)
     if expected_target not in readme:
         raise AssertionError(f"README does not identify target {expected_target}")
 

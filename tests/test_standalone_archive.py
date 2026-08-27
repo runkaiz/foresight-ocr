@@ -30,21 +30,90 @@ def _tar_member(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
     archive.addfile(info, io.BytesIO(payload))
 
 
+def _tar_symlink(archive: tarfile.TarFile, name: str, target: str) -> None:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.SYMTYPE
+    info.linkname = target
+    archive.addfile(info)
+
+
+def _tar_contract_members(
+    archive: tarfile.TarFile, root: str, target: str, archive_verifier
+) -> None:
+    _tar_member(archive, f"{root}/foresight-ocr", b"binary")
+    _tar_member(archive, f"{root}/LICENSE", b"license")
+    _tar_member(archive, f"{root}/README.txt", target.encode())
+    _tar_member(
+        archive,
+        f"{root}/THIRD_PARTY_NOTICES.txt",
+        _notices(archive_verifier),
+    )
+
+
 def test_tar_standalone_contract(archive_verifier, tmp_path: Path) -> None:
     path = tmp_path / "foresight-ocr-1.0.0-linux-x86_64.tar.gz"
     root = path.name.removesuffix(".tar.gz")
     with tarfile.open(path, "w:gz") as archive:
-        _tar_member(archive, f"{root}/foresight-ocr", b"binary")
-        _tar_member(archive, f"{root}/LICENSE", b"license")
-        _tar_member(archive, f"{root}/README.txt", b"linux-x86_64")
-        _tar_member(
-            archive,
-            f"{root}/THIRD_PARTY_NOTICES.txt",
-            _notices(archive_verifier),
-        )
+        _tar_contract_members(archive, root, "linux-x86_64", archive_verifier)
         _tar_member(archive, f"{root}/_internal/library/README.txt", b"dependency")
 
     archive_verifier.verify(path)
+
+
+def test_macos_tar_allows_safe_framework_symlinks(
+    archive_verifier, tmp_path: Path
+) -> None:
+    path = tmp_path / "foresight-ocr-1.0.0-macos-arm64.tar.gz"
+    root = path.name.removesuffix(".tar.gz")
+    with tarfile.open(path, "w:gz") as archive:
+        _tar_contract_members(archive, root, "macos-arm64", archive_verifier)
+        _tar_symlink(
+            archive,
+            f"{root}/_internal/Python",
+            "Python.framework/Versions/Current/Python",
+        )
+        _tar_symlink(
+            archive,
+            f"{root}/_internal/Python.framework/Python",
+            "Versions/Current/Python",
+        )
+        _tar_symlink(
+            archive,
+            f"{root}/_internal/Python.framework/Versions/Current",
+            "3.12",
+        )
+
+    archive_verifier.verify(path)
+
+
+def test_linux_tar_rejects_symlinks(archive_verifier, tmp_path: Path) -> None:
+    path = tmp_path / "foresight-ocr-1.0.0-linux-x86_64.tar.gz"
+    root = path.name.removesuffix(".tar.gz")
+    with tarfile.open(path, "w:gz") as archive:
+        _tar_symlink(archive, f"{root}/_internal/Python", "Python.framework/Python")
+
+    with pytest.raises(AssertionError, match="standalone archive contains a link"):
+        archive_verifier.verify(path)
+
+
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [
+        ("_internal/Python", "../../../outside"),
+        ("_internal/alias", "Python.framework/Versions/Current/Python"),
+        ("_internal/Python.framework/Python", "/tmp/outside"),
+    ],
+)
+def test_macos_tar_rejects_unsafe_framework_symlinks(
+    archive_verifier, tmp_path: Path, name: str, target: str
+) -> None:
+    path = tmp_path / "foresight-ocr-1.0.0-macos-x86_64.tar.gz"
+    root = path.name.removesuffix(".tar.gz")
+    with tarfile.open(path, "w:gz") as archive:
+        _tar_symlink(archive, f"{root}/{name}", target)
+
+    with pytest.raises(AssertionError, match="unsafe macOS framework link"):
+        archive_verifier.verify(path)
 
 
 def test_zip_standalone_contract(archive_verifier, tmp_path: Path) -> None:

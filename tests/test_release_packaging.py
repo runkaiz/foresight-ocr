@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import io
+import tarfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import pytest
+
+
+def _load_script(name: str):
+    path = Path(__file__).parents[1] / "scripts" / name
+    spec = importlib.util.spec_from_file_location(name.removesuffix(".py"), path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def linux_packager():
+    return _load_script("build_linux_packages.py")
+
+
+@pytest.fixture
+def aur_packager():
+    return _load_script("build_aur_package.py")
+
+
+@pytest.fixture
+def windows_packager():
+    return _load_script("build_windows_installer.py")
+
+
+def _standalone_stage(root: Path, target: str, *, windows: bool = False) -> Path:
+    stage = root / f"foresight-ocr-0.1.0-{target}"
+    stage.mkdir()
+    launcher = stage / ("foresight-ocr.exe" if windows else "foresight-ocr")
+    launcher.write_bytes(b"launcher")
+    launcher.chmod(0o755)
+    (stage / "_internal").mkdir()
+    (stage / "LICENSE").write_text("license", encoding="utf-8")
+    (stage / "README.txt").write_text(target, encoding="utf-8")
+    (stage / "THIRD_PARTY_NOTICES.txt").write_text("notices", encoding="utf-8")
+    return stage
+
+
+def _release_archive(path: Path, target: str) -> None:
+    root = f"foresight-ocr-0.1.0-{target}"
+    with tarfile.open(path, "w:gz") as archive:
+        for name in ("foresight-ocr", "LICENSE", "THIRD_PARTY_NOTICES.txt"):
+            payload = name.encode()
+            info = tarfile.TarInfo(f"{root}/{name}")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+
+
+def test_linux_package_metadata_and_stage_contract(
+    linux_packager, tmp_path: Path
+) -> None:
+    stage = _standalone_stage(tmp_path, "linux-x86_64")
+    linux_packager._validate_stage(stage, "0.1.0", "linux-x86_64")
+
+    spec = linux_packager._rpm_spec("0.1.0", "x86_64")
+    assert "Requires:       glibc >= 2.35" in spec
+    assert "/opt/foresight-ocr/_internal" in spec
+    assert "%global __os_install_post %{nil}" in spec
+    assert linux_packager.TARGETS["linux-arm64"]["deb_arch"] == "arm64"
+    assert linux_packager.TARGETS["linux-arm64"]["rpm_arch"] == "aarch64"
+
+
+def test_linux_stage_rejects_missing_runtime(linux_packager, tmp_path: Path) -> None:
+    stage = _standalone_stage(tmp_path, "linux-x86_64")
+    (stage / "_internal").rmdir()
+    with pytest.raises(SystemExit, match="_internal"):
+        linux_packager._validate_stage(stage, "0.1.0", "linux-x86_64")
+
+
+def test_aur_recipe_uses_release_archives_and_exact_hashes(
+    aur_packager, tmp_path: Path
+) -> None:
+    checksums = {}
+    for target in aur_packager.TARGETS:
+        path = tmp_path / f"foresight-ocr-0.1.0-{target}.tar.gz"
+        _release_archive(path, target)
+        aur_packager._verify_archive(path, "0.1.0", target)
+        checksums[target] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    pkgbuild = aur_packager._pkgbuild("0.1.0", checksums)
+    srcinfo = aur_packager._srcinfo("0.1.0", checksums)
+    assert "pkgname=foresight-ocr-bin" in pkgbuild
+    assert "arch=('x86_64' 'aarch64')" in pkgbuild
+    assert "options=('!strip')" in pkgbuild
+    assert "v${pkgver}/foresight-ocr-0.1.0-linux-x86_64.tar.gz" in pkgbuild
+    assert checksums["linux-x86_64"] in pkgbuild
+    assert checksums["linux-arm64"] in srcinfo
+    assert "v0.1.0/foresight-ocr-0.1.0-linux-x86_64.tar.gz" in srcinfo
+    assert "${pkgver}" not in srcinfo
+    assert "pkgname = foresight-ocr-bin" in srcinfo
+
+
+def test_windows_installer_contract(windows_packager, tmp_path: Path) -> None:
+    stage = _standalone_stage(tmp_path, "windows-x86_64", windows=True)
+    windows_packager._validate_stage(stage, "0.1.0")
+
+    root = ET.fromstring(windows_packager._wxs("0.1.0"))
+    namespace = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+    package = root.find("w:Package", namespace)
+    assert package is not None
+    assert package.attrib["Scope"] == "perMachine"
+    assert package.attrib["UpgradeCode"] == windows_packager.UPGRADE_CODE
+    files = root.find(".//w:Files", namespace)
+    environment = root.find(".//w:Environment", namespace)
+    component = root.find(".//w:Component", namespace)
+    assert files is not None and files.attrib["Include"] == "$(var.Payload)\\**"
+    assert component is not None
+    assert component.attrib["Guid"] == windows_packager.PATH_COMPONENT_GUID
+    assert component.attrib["KeyPath"] == "yes"
+    assert environment is not None
+    assert environment.attrib == {
+        "Id": "ForesightOCRPath",
+        "Name": "PATH",
+        "Value": "[INSTALLFOLDER]",
+        "Action": "set",
+        "Part": "last",
+        "Permanent": "no",
+        "System": "yes",
+    }
+
+
+def test_windows_installer_signing_gate(
+    windows_packager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FORESIGHT_REQUIRE_SIGNING", raising=False)
+    assert not windows_packager._requires_signing("0.9.9")
+    assert windows_packager._requires_signing("1.0.0")
+    monkeypatch.setenv("FORESIGHT_REQUIRE_SIGNING", "1")
+    assert windows_packager._requires_signing("0.1.0")

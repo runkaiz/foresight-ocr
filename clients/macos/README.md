@@ -58,6 +58,22 @@ Release builds enable Hardened Runtime and request a secure timestamp. The
 result is Developer ID signed. To submit, staple, and assess it in the same
 build, add `NOTARIZE=1` and `NOTARY_KEYCHAIN_PROFILE=PROFILE`.
 
+To produce the end-user disk image, add `CREATE_DMG=1`. The DMG contains the
+application and an Applications-folder shortcut:
+
+```bash
+CONFIGURATION=release \
+SIGN_IDENTITY="Developer ID Application: Runkai Zhang (C58CLY4K2U)" \
+CREATE_DMG=1 NOTARIZE=1 NOTARY_KEYCHAIN_PROFILE=PROFILE \
+./scripts/build-app.sh
+```
+
+The release workflow builds this on the `xcode-27` Apple-silicon runner. It
+signs nested code and the application before signing the disk image, submits
+the DMG to Apple's notary service, staples the ticket, and runs Gatekeeper
+assessment. Manual release-candidate runs may produce an ad-hoc-signed DMG when
+release credentials are intentionally unavailable; tagged releases fail closed.
+
 The native end-user startup flow is:
 
 1. Choose **New Project** and select or drop exactly one PDF, or choose

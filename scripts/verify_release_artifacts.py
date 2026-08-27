@@ -49,12 +49,18 @@ REQUIRED_SDIST = {
     "runners/paddleocr_vl.py",
     "scripts/audit_public_release.py",
     "scripts/audit_secrets.py",
+    "scripts/build_aur_package.py",
     "scripts/build_binary.py",
+    "scripts/build_linux_packages.py",
+    "scripts/build_windows_installer.py",
     "scripts/check_platform_wheels.py",
     "scripts/check_version.py",
     "scripts/smoke_cli_distribution.py",
     "scripts/verify_release_artifacts.py",
     "scripts/verify_standalone_archive.py",
+    "packaging/linux/foresight-ocr.svg",
+    "packaging/linux/AppImage-runtime-LICENSE.txt",
+    "clients/macos/Resources/Info.plist",
     "src/foresight_ocr/review/app.html",
 }
 

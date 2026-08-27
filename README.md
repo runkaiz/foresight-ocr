@@ -76,8 +76,84 @@ Stages are independently rerunnable. Generated assets and state live under
 
 ## Installation
 
-Foresight OCR currently targets Python 3.12. After a release is published, the
-recommended Python-based install is an isolated tool environment:
+Download installers from the matching GitHub Release and verify them against
+`SHA256SUMS`. Release assets also receive GitHub build-provenance attestations.
+The packaged application contains Python and the core native libraries; OCR
+models remain separate, managed engine downloads.
+
+### Linux
+
+Choose the format native to your distribution. Both x86-64 and ARM64 builds
+target glibc 2.35 or newer.
+
+For a no-root, single-file installation, download the matching AppImage:
+
+```bash
+chmod +x foresight-ocr-VERSION-linux-x86_64.AppImage
+install -Dm755 foresight-ocr-VERSION-linux-x86_64.AppImage \
+  ~/.local/bin/foresight-ocr
+foresight-ocr doctor
+```
+
+On Debian, Ubuntu, and derivatives, install the architecture-matching `.deb`:
+
+```bash
+sudo apt install ./foresight-ocr_VERSION-1_amd64.deb
+foresight-ocr doctor
+```
+
+On Fedora, RHEL, and derivatives, install the matching RPM:
+
+```bash
+sudo dnf install ./foresight-ocr-VERSION-1.x86_64.rpm
+foresight-ocr doctor
+```
+
+The ARM64 filenames use `arm64` for Debian and `aarch64` for RPM. On Arch
+Linux, once `foresight-ocr-bin` is listed in the AUR, install it with an AUR
+helper or use the standard build flow:
+
+```bash
+git clone https://aur.archlinux.org/foresight-ocr-bin.git
+cd foresight-ocr-bin
+makepkg -si
+```
+
+Every GitHub release also contains an AUR repository bundle with `PKGBUILD`,
+`.SRCINFO`, and the exact x86-64/ARM64 release checksums. Publishing that bundle
+to the AUR is a separate maintainer action because the AUR requires an owner SSH
+key.
+
+### macOS
+
+On Apple silicon with macOS 27 or newer, open
+`Foresight-OCR-VERSION-macos-arm64.dmg` and drag **Foresight OCR** to the
+Applications folder. Tagged releases require a Developer ID signature and
+Apple notarization; users should never need to bypass Gatekeeper.
+
+The native Mac application installs no system Python and needs no terminal.
+Portable CLI archives remain available for macOS 14 or newer on Intel and Apple
+silicon.
+
+### Windows
+
+On 64-bit Windows 10 or 11, double-click
+`foresight-ocr-VERSION-windows-x86_64.msi`, approve the per-machine install,
+then open a new PowerShell window:
+
+```powershell
+foresight-ocr doctor
+```
+
+The MSI installs under `Program Files` and adds `foresight-ocr` to the system
+`PATH`. The ZIP remains available when a portable, non-installed copy is
+preferred. Signed releases Authenticode-sign both the bundled executables and
+the MSI so users do not need to bypass SmartScreen.
+
+### Python package
+
+Foresight OCR targets Python 3.12. After publication to PyPI, install it into an
+isolated tool environment:
 
 ```bash
 uv tool install --python 3.12 foresight-ocr
@@ -85,9 +161,11 @@ foresight-ocr --version
 foresight-ocr doctor
 ```
 
-`pipx install --python 3.12 foresight-ocr` is also supported. GitHub
-Releases additionally provide standalone archives that include Python and the
-core native libraries:
+`pipx install --python 3.12 foresight-ocr` is also supported.
+
+### Portable archives
+
+GitHub Releases retain standalone archives for all supported systems:
 
 | Platform | Release target |
 |---|---|
@@ -97,12 +175,10 @@ core native libraries:
 | macOS 14+, Apple silicon | `macos-arm64` |
 | Windows 10/11, x86-64 | `windows-x86_64` |
 
-Each archive is built and smoke-tested on its target operating system. Release
-assets include `SHA256SUMS` and GitHub build-provenance attestations. The Linux
-standalone build targets glibc 2.35 from Ubuntu 22.04. The builders inspect every
-bundled ELF or Mach-O object and fail if a dependency raises the documented
-Linux or macOS floor. Source/Python installs may work on additional systems but
-are not release-gated there.
+Each archive is built and smoke-tested on its target operating system. The
+builders inspect every bundled ELF or Mach-O object and fail if a dependency
+raises the documented Linux or macOS floor. Source/Python installs may work on
+additional systems but are not release-gated there.
 
 Download the archive for your platform and `SHA256SUMS` from the same GitHub
 release, then compare the archive's SHA-256 digest before extracting it. On
@@ -126,9 +202,7 @@ Expand-Archive foresight-ocr-VERSION-windows-x86_64.zip -DestinationPath .
 Keep the complete extracted directory together; the executable loads native
 libraries from its adjacent `_internal` directory. Run it from the directory
 where you want the Foresight project to live, because the current working
-directory owns `configs/` and `artifacts/`. Signed release binaries should pass
-Gatekeeper or SmartScreen without asking users to bypass operating-system
-security checks.
+directory owns `configs/` and `artifacts/`.
 
 For a source checkout, install the locked development environment with:
 

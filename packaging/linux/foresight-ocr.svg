@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Foresight OCR">
+  <rect width="512" height="512" rx="96" fill="#17324d"/>
+  <path d="M142 86h164l64 64v276H142z" fill="#f7f3e8"/>
+  <path d="M306 86v64h64" fill="#c7d7e6"/>
+  <path d="M192 214h128M192 270h128M192 326h84" fill="none" stroke="#17324d" stroke-linecap="round" stroke-width="24"/>
+  <path d="M112 174v-48h48M400 174v-48h-48M112 338v48h48M400 338v48h-48" fill="none" stroke="#e8a93f" stroke-linecap="round" stroke-linejoin="round" stroke-width="20"/>
+</svg>

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import plistlib
 import tomllib
 from pathlib import Path
 
@@ -45,10 +46,16 @@ def main() -> int:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = project["project"]["version"]
     package_versions = _package_versions()
+    macos_info = plistlib.loads(
+        (ROOT / "clients" / "macos" / "Resources" / "Info.plist").read_bytes()
+    )
     expected = {
         "pyproject.toml": version,
         "foresight_ocr.__version__": package_versions.get("__version__"),
         "foresight_ocr.PIPELINE_VERSION": package_versions.get("PIPELINE_VERSION"),
+        "macOS CFBundleShortVersionString": macos_info.get(
+            "CFBundleShortVersionString"
+        ),
     }
     mismatches = {name: value for name, value in expected.items() if value != version}
     if mismatches:

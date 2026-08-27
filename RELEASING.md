@@ -20,13 +20,15 @@
 - Register `foresight-ocr` as a PyPI Trusted Publisher for `.github/workflows/release.yml`
   and the protected `pypi` environment. Require manual approval for that environment.
 
-## 1.0 signing gates
+## Installer and 1.0 signing gates
 
 Standalone archives are reproducibly built and attested, but public 1.0 desktop
 downloads must also satisfy each operating system's trust path:
 
-- Sign and notarize both macOS binaries with an Apple Developer ID certificate.
-- Authenticode-sign the Windows executable with the project's release identity.
+- Sign and notarize both macOS CLI binaries and the native application DMG with
+  an Apple Developer ID certificate.
+- Authenticode-sign the Windows executable, bundled native code, and MSI with
+  the project's release identity.
 - Exercise each signed archive on a clean, non-developer machine without
   bypassing Gatekeeper or SmartScreen.
 
@@ -39,9 +41,25 @@ The release workflow expects these repository secrets:
 
 Set the repository variable `WINDOWS_TIMESTAMP_URL` to the RFC 3161 timestamp
 service supplied by the Windows certificate issuer. Certificate blobs are
-base64-encoded PKCS#12/PFX files. Starting at version 1.0.0, the standalone
-builder fails if the platform's signing inputs are absent; macOS also fails if
-Apple notarization or Gatekeeper assessment does not succeed.
+base64-encoded PKCS#12/PFX files. Every tagged release sets the signing gate;
+version 1.0.0 and newer also enforce it in local builds. The standalone and
+installer builders fail if the platform's signing inputs are absent; macOS also
+fails if Apple notarization or Gatekeeper assessment does not succeed.
+
+Linux release jobs build and smoke-test AppImage, DEB, and RPM packages for
+x86-64 and ARM64 from the same standalone payload. The merge job generates an
+AUR repository bundle whose source checksums are taken from those exact release
+archives. The AUR itself does not store binaries and requires a package-owner
+SSH key, so publish or update `foresight-ocr-bin` only after the GitHub release
+exists:
+
+```bash
+tar -xzf foresight-ocr-bin-VERSION-1-aur.tar.gz
+cd foresight-ocr-bin-VERSION
+makepkg --printsrcinfo > .SRCINFO
+makepkg --verifysource
+# Copy the reviewed files into the AUR package Git repository, commit, and push.
+```
 
 Do not call an unsigned release candidate 1.0. PyPI installs remain separately
 covered by Trusted Publishing and package attestations.
@@ -109,8 +127,9 @@ wheels only; this prevents an install from silently requiring a local compiler o
 raising the documented macOS deployment floor.
 
 Before tagging, run the `Release` workflow manually and install every resulting
-standalone archive on a clean target. Once the signed candidates pass, update
-all three version declarations together, tag that exact commit as `vX.Y.Z`, and
+AppImage, DEB, RPM, MSI, DMG, and standalone archive on a clean target. Once the
+signed candidates pass, update all four release-facing version declarations
+together, tag that exact commit as `vX.Y.Z`, and
 push the tag. The tag workflow rebuilds and tests all assets, publishes a GitHub
 release with checksums and provenance attestations, and sends only the wheel and
 source distribution to PyPI through the protected environment.

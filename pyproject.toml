@@ -21,7 +21,7 @@ dependencies = [
     # Pikepdf 10.x CPython 3.12 wheels require macOS 15 on Intel. Keep the
     # supported macOS 14 floor wheel-only on both Apple architectures.
     "pikepdf>=9.11,<10",
-    "pillow>=11.0,<13",
+    "pillow>=11.0,<14",
     "numpy>=2.0,<3",
     "opencv-python-headless>=4.10.0.84,<6",
     "scikit-learn>=1.6,<2",
